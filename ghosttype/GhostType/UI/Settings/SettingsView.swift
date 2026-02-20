@@ -92,6 +92,15 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Avatar") {
+                Toggle("Show Avatar Panel", isOn: $appState.showAvatarPanel)
+                TextField("Avatar URL", text: $appState.avatarURL)
+                    .textFieldStyle(.roundedBorder)
+                Text("URL loaded in the avatar panel (WKWebView).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Text-to-Speech (MiniMax)") {
                 SecureField("API Key", text: $appState.minimaxApiKey)
                     .textFieldStyle(.roundedBorder)
@@ -130,6 +139,6 @@ struct SettingsView: View {
             }
         }
         .padding()
-        .frame(width: 420, height: 620)
+        .frame(width: 420, height: 720)
     }
 }

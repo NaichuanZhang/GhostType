@@ -116,6 +116,15 @@ class AppState: ObservableObject {
 
     // MARK: - Settings (persisted in UserDefaults)
 
+    /// Whether to show the avatar WKWebView panel on the left side of the prompt.
+    @Published var showAvatarPanel: Bool = UserDefaults.standard.object(forKey: "showAvatarPanel") as? Bool ?? true
+
+    /// Fixed width of the avatar panel.
+    let avatarPanelWidth: CGFloat = 300
+
+    /// URL loaded in the avatar WKWebView.
+    @Published var avatarURL: String = UserDefaults.standard.string(forKey: "avatarURL") ?? "https://aloe-cherry-29999215.figma.site"
+
     /// Backend mode: "local" for WebSocket to localhost:8420, "agentcore" for HTTP to AgentCore endpoint.
     @Published var backendMode: String = UserDefaults.standard.string(forKey: "backendMode") ?? "local"
 
@@ -167,6 +176,8 @@ class AppState: ObservableObject {
     }
 
     func saveSettings() {
+        UserDefaults.standard.set(showAvatarPanel, forKey: "showAvatarPanel")
+        UserDefaults.standard.set(avatarURL, forKey: "avatarURL")
         UserDefaults.standard.set(backendMode, forKey: "backendMode")
         UserDefaults.standard.set(agentCoreEndpoint, forKey: "agentCoreEndpoint")
         UserDefaults.standard.set(modelId, forKey: "modelId")
