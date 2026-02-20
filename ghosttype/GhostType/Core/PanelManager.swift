@@ -422,6 +422,8 @@ class PanelManager {
         let webConfig = WKWebViewConfiguration()
         let webView = NonInteractiveWebView(frame: .zero, configuration: webConfig)
         webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
         webView.loadHTMLString(centeredIframeHTML(for: appState.avatarURL), baseURL: nil)
         self.loadedAvatarURL = appState.avatarURL
         avatarContainer.addSubview(webView)
