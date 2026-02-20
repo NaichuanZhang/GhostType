@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "searxng": {
+      "command": "mcp-searxng",
+      "args": [],
+      "env": {
+        "SEARXNG_URL": "http://localhost:1234"
+      },
+      "enabled": true
+    }
+  }
+}

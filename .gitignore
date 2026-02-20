@@ -1,0 +1,28 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Credentials / startup scripts with secrets
+ghosttype/agentcore/start.sh
+ghosttype/agentcore/config.py
+ghosttype/agentcore/.bedrock_agentcore.yaml
+
+# IDE
+.idea/
+.vscode/
