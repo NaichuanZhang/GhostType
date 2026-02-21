@@ -2,6 +2,8 @@
 
 A native macOS AI writing assistant. Press **Ctrl+K** anywhere on the system, type a prompt into the floating panel, and AI-generated text streams back in real time -- ready to insert directly into the active app. Think Spotlight for AI writing.
 
+**[Watch the demo video](https://drive.google.com/file/d/1AD9gCUB76QqH_EGH_Zd_QefImAPDl0pv/view?usp=drive_link)** | **[Slide deck](https://docs.google.com/presentation/d/17CxFMVcIuuAas0sncyIrj_XOtwbQ_fph/edit?usp=drive_link&ouid=100873294427634961344&rtpof=true&sd=true)**
+
 ## How It Works
 
 1. Press **Ctrl+K** in any app -- a floating panel appears at the text cursor
