@@ -1,0 +1,107 @@
+version: "2"
+type: backend
+tech_stack:
+  - python
+  - fastapi
+  - websocket
+  - strands-agents-sdk
+  - uvicorn
+  - boto3
+features:
+  - name: Health Check API
+    description: Simple health check endpoint returning server status, provider, and model info
+    files:
+      - ghosttype/backend/server.py
+      - ghosttype/backend/config.py
+    endpoints:
+      - method: GET
+        path: /health
+        description: Returns server health status with provider and model information
+        auth_required: false
+        response_schema:
+          "200":
+            status: string
+            provider: string
+            model: string
+    depends_on: []
+  - name: Text Generation WebSocket
+    description: WebSocket endpoint for streaming AI text generation with multi-turn conversation support, cancellation, and per-request model configuration
+    files:
+      - ghosttype/backend/server.py
+      - ghosttype/backend/agent.py
+      - ghosttype/backend/config.py
+    endpoints:
+      - method: WEBSOCKET
+        path: /generate
+        description: "Streaming text generation via WebSocket. Accepts prompt requests with context, mode, and config. Streams back tokens, done, error, or cancelled messages."
+        auth_required: false
+        request_schema:
+          body:
+            prompt: string
+            context: string
+            mode: "string (generate|rewrite|fix|translate)"
+            mode_type: "string (draft|chat)"
+            screenshot: "string (base64, optional)"
+            config:
+              provider: string
+              model_id: string
+              aws_profile: string
+              aws_region: string
+        response_schema:
+          "token": "type=token, content=partial text"
+          "done": "type=done, content=full response"
+          "error": "type=error, content=error message"
+          "cancelled": "type=cancelled"
+    depends_on: []
+  - name: Cancellation Support
+    description: Client can send cancel messages during generation to abort streaming
+    files:
+      - ghosttype/backend/server.py
+    endpoints:
+      - method: WEBSOCKET
+        path: /generate
+        description: "Send type=cancel message to abort an in-progress generation"
+        auth_required: false
+        request_schema:
+          body:
+            type: "cancel"
+        response_schema:
+          "cancelled": "type=cancelled"
+    depends_on:
+      - Text Generation WebSocket
+  - name: New Conversation Reset
+    description: Client can reset the conversation history to start fresh
+    files:
+      - ghosttype/backend/server.py
+    endpoints:
+      - method: WEBSOCKET
+        path: /generate
+        description: "Send type=new_conversation message to reset agent state"
+        auth_required: false
+        request_schema:
+          body:
+            type: "new_conversation"
+        response_schema:
+          "conversation_reset": "type=conversation_reset"
+    depends_on:
+      - Text Generation WebSocket
+  - name: Message Building
+    description: Builds user messages based on mode (generate, rewrite, fix, translate) and optional context/screenshot
+    files:
+      - ghosttype/backend/server.py
+    endpoints: []
+    depends_on: []
+  - name: Model Configuration
+    description: Per-request model configuration supporting multiple providers with env var defaults
+    files:
+      - ghosttype/backend/agent.py
+      - ghosttype/backend/config.py
+    endpoints: []
+    depends_on: []
+known_limitations:
+  - issue: Only bedrock provider is implemented in create_model; other providers raise ValueError
+    location: ghosttype/backend/agent.py
+    impact: Requests with provider other than bedrock will fail
+  - issue: CORS allows all origins
+    location: ghosttype/backend/server.py
+    impact: No origin restriction on API access

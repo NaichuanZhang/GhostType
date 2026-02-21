@@ -1,0 +1,18 @@
+{
+  "status": "commited",
+  "type": "backend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:8420",
+  "backendAuthType": "public",
+  "executionArgs": {
+    "projectName": "cursor",
+    "projectPath": "/Users/zhangnai/personal/cursor",
+    "testIds": [],
+    "additionalInstruction": "Use the existing test files in testsprite_tests/ directory as-is. They already include proxy_connect() helpers for HTTP_PROXY tunnel support and correct assertions matching the actual server behavior.",
+    "envs": {
+      "API_KEY": "sk-user-272ULC1d3hJQB_BF8Ko2ZhgNzZ24xzyVO3VKwsPiGHLgfIhUJjCOI4cXD_ERC5x0-fEToX3r7Rt5ZmStnVQ4NWV-hTRC4fYdyfDiAkmmr13c6ADDfHTX3lKlOa8jG4_NpaQ"
+    }
+  },
+  "serverPort": 50530,
+  "proxy": "http://26973176-0086-41ff-a20b-fc8f372f5bfb:DYomcHqQeVBTf58oWxLXZODdg2tVndrZ@tun.testsprite.com:8080"
+}

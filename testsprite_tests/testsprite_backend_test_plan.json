@@ -1,0 +1,52 @@
+[
+  {
+    "id": "TC001",
+    "title": "health check api returns server status and model info",
+    "description": "Test the GET /health endpoint to verify it returns a 200 status with JSON containing the server status, provider, and model information when the backend is running."
+  },
+  {
+    "id": "TC002",
+    "title": "websocket generate streams tokens and completes successfully",
+    "description": "Test the WebSocket /generate endpoint by sending a valid generation request with prompt, context, mode, and config, and verify that it streams token messages followed by a done message with the full response."
+  },
+  {
+    "id": "TC003",
+    "title": "websocket generate handles malformed json with error message",
+    "description": "Test the WebSocket /generate endpoint by sending malformed JSON or a message missing the required prompt field, and verify that the server responds with an error message indicating validation or parse error."
+  },
+  {
+    "id": "TC004",
+    "title": "websocket generate supports cancellation of in progress generation",
+    "description": "Test sending a cancel message during an active generation on the WebSocket /generate endpoint and verify that the server responds with a cancelled message and stops sending tokens."
+  },
+  {
+    "id": "TC005",
+    "title": "websocket generate cancel without active generation returns error or noop",
+    "description": "Test sending a cancel message on the WebSocket /generate endpoint when no generation is active and verify that the server responds with an error or no-op message indicating no active generation to cancel."
+  },
+  {
+    "id": "TC006",
+    "title": "websocket generate supports new conversation reset",
+    "description": "Test sending a new_conversation message on the WebSocket /generate endpoint and verify that the server responds with a conversation_reset message confirming the reset of conversation history."
+  },
+  {
+    "id": "TC007",
+    "title": "websocket generate handles closed connection on new conversation reset",
+    "description": "Test the behavior when sending a new_conversation message on the WebSocket /generate endpoint after the connection is closed, expecting the client send to fail or raise an error."
+  },
+  {
+    "id": "TC008",
+    "title": "websocket generate builds messages based on mode and context",
+    "description": "Test the WebSocket /generate endpoint with different modes (generate, rewrite, fix, translate) and optional context or screenshot, verifying that the server constructs appropriate user/system messages and streams the expected token messages."
+  },
+  {
+    "id": "TC009",
+    "title": "websocket generate returns error for invalid mode",
+    "description": "Test sending a generation request with an invalid or unsupported mode on the WebSocket /generate endpoint and verify that the server responds with an error message indicating invalid mode."
+  },
+  {
+    "id": "TC010",
+    "title": "websocket generate supports per request model configuration",
+    "description": "Test the WebSocket /generate endpoint with per-request model configuration including provider, model_id, aws_profile, and aws_region, verifying that the server uses the specified model and streams tokens accordingly."
+  }
+]
