@@ -1,8 +1,22 @@
 import Testing
+import Foundation
 @testable import GhostTypeLib
 
 private func makeAppState() -> AppState {
     AppState()
+}
+
+/// Creates an AppState backed by a temp SessionStore for test isolation.
+private func makeAppStateWithTempStore() -> (AppState, URL) {
+    let base = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ghosttype-appstate-\(UUID().uuidString)")
+    let state = AppState()
+    state.sessionStore = SessionStore(baseDirectory: base)
+    return (state, base)
+}
+
+private func cleanup(_ url: URL) {
+    try? FileManager.default.removeItem(at: url)
 }
 
 // MARK: - clearCurrentResponse
@@ -241,4 +255,221 @@ private func makeAppState() -> AppState {
 
     #expect(config["aws_profile"] == nil)
     #expect(config["aws_region"] == "us-west-2")
+}
+
+// MARK: - effectiveAgentId
+
+@Test func effectiveAgentIdReturnsSelectedWhenSet() {
+    let state = makeAppState()
+    state.availableAgents = [
+        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
+        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"], isDefault: false, appMappings: []),
+    ]
+    state.defaultAgentId = "general"
+    state.selectedAgentId = "coding"
+
+    #expect(state.effectiveAgentId() == "coding")
+}
+
+@Test func effectiveAgentIdAutoDetectsFromBundleId() {
+    let state = makeAppState()
+    state.availableAgents = [
+        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
+        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"], isDefault: false, appMappings: ["com.microsoft.VSCode"]),
+    ]
+    state.defaultAgentId = "general"
+    state.selectedAgentId = nil
+    state.targetBundleID = "com.microsoft.VSCode"
+
+    #expect(state.effectiveAgentId() == "coding")
+}
+
+@Test func effectiveAgentIdFallsBackToDefault() {
+    let state = makeAppState()
+    state.availableAgents = [
+        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
+    ]
+    state.defaultAgentId = "general"
+    state.selectedAgentId = nil
+    state.targetBundleID = nil
+
+    #expect(state.effectiveAgentId() == "general")
+}
+
+@Test func effectiveAgentIdReturnsNilWhenNoAgents() {
+    let state = makeAppState()
+    state.availableAgents = []
+    state.defaultAgentId = nil
+    state.selectedAgentId = nil
+
+    #expect(state.effectiveAgentId() == nil)
+}
+
+// MARK: - buildSessionFromConversation
+
+@Test func buildSessionReturnsNilWhenNoMessages() {
+    let state = makeAppState()
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session == nil)
+}
+
+@Test func buildSessionReturnsNilWithOnlyOneMessage() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "Hello")
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session == nil)
+}
+
+@Test func buildSessionCreatesValidSession() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "What is Swift?")
+    state.appendMessage(role: "assistant", content: "A programming language.")
+    state.conversationMode = .chat
+    state.modelId = "test-model"
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session != nil)
+    #expect(session?.title == "What is Swift?")
+    #expect(session?.mode == "chat")
+    #expect(session?.modelId == "test-model")
+    #expect(session?.messages.count == 2)
+    #expect(session?.messages[0].role == "user")
+    #expect(session?.messages[0].content == "What is Swift?")
+    #expect(session?.messages[1].role == "assistant")
+    #expect(session?.messages[1].content == "A programming language.")
+}
+
+@Test func buildSessionTruncatesLongTitle() {
+    let state = makeAppState()
+    let longPrompt = String(repeating: "x", count: 100)
+    state.appendMessage(role: "user", content: longPrompt)
+    state.appendMessage(role: "assistant", content: "response")
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session != nil)
+    #expect(session!.title.count == 63) // 60 + "..."
+    #expect(session!.title.hasSuffix("..."))
+}
+
+@Test func buildSessionIncludesSelectedContext() {
+    let state = makeAppState()
+    state.selectedContext = "some selected text"
+    state.appendMessage(role: "user", content: "Rewrite this")
+    state.appendMessage(role: "assistant", content: "Rewritten text")
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session?.messages[0].context == "some selected text")
+}
+
+@Test func buildSessionIncludesAgentId() {
+    let state = makeAppState()
+    state.selectedAgentId = "coding"
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+
+    let session = state.buildSessionFromConversation()
+
+    #expect(session?.agentId == "coding")
+}
+
+// MARK: - saveCurrentSession / loadSessionHistory
+
+@Test func saveCurrentSessionIncludesInFlightResponse() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    // Simulate: user sent prompt (archived), response streamed into responseText
+    // but completeTurn() was never called (draft mode — user dismisses or clicks Insert)
+    state.appendMessage(role: "user", content: "Write me a poem")
+    state.responseText = "Roses are red, violets are blue"
+
+    state.saveCurrentSession()
+
+    let sessions = state.sessionStore.loadSessions()
+    #expect(sessions.count == 1)
+    #expect(sessions[0].messages.count == 2)
+    #expect(sessions[0].messages[1].role == "assistant")
+    #expect(sessions[0].messages[1].content == "Roses are red, violets are blue")
+}
+
+@Test func saveCurrentSessionWritesToDisk() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    state.appendMessage(role: "user", content: "Hello")
+    state.appendMessage(role: "assistant", content: "Hi there")
+
+    state.saveCurrentSession()
+
+    let sessions = state.sessionStore.loadSessions()
+    #expect(sessions.count == 1)
+    #expect(sessions[0].title == "Hello")
+}
+
+@Test func saveCurrentSessionSkipsEmptyConversation() {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    state.saveCurrentSession()
+
+    let sessions = state.sessionStore.loadSessions()
+    #expect(sessions.isEmpty)
+}
+
+@Test func loadSessionHistoryPopulatesList() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    // Simulate two saved sessions
+    state.appendMessage(role: "user", content: "First chat")
+    state.appendMessage(role: "assistant", content: "Response 1")
+    state.saveCurrentSession()
+    state.conversationMessages = []
+
+    state.appendMessage(role: "user", content: "Second chat")
+    state.appendMessage(role: "assistant", content: "Response 2")
+    state.saveCurrentSession()
+
+    state.sessionHistory = []
+    state.loadSessionHistory()
+
+    #expect(state.sessionHistory.count == 2)
+}
+
+@Test func clearConversationAutoSavesSession() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    state.appendMessage(role: "user", content: "Before clear")
+    state.appendMessage(role: "assistant", content: "Answer")
+
+    state.clearConversation()
+
+    let sessions = state.sessionStore.loadSessions()
+    #expect(sessions.count == 1)
+    #expect(sessions[0].title == "Before clear")
+}
+
+@Test func deleteSessionRemovesAndRefreshes() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    state.appendMessage(role: "user", content: "To delete")
+    state.appendMessage(role: "assistant", content: "Response")
+    state.saveCurrentSession()
+    state.loadSessionHistory()
+
+    #expect(state.sessionHistory.count == 1)
+    let sessionId = state.sessionHistory[0].id
+
+    state.deleteSession(id: sessionId)
+
+    #expect(state.sessionHistory.isEmpty)
 }

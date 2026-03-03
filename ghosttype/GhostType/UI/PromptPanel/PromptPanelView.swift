@@ -6,6 +6,7 @@ import ApplicationServices
 struct PromptPanelView: View {
     @EnvironmentObject var appState: AppState
     @FocusState private var isPromptFocused: Bool
+    @State private var showHistorySidebar = false
 
     /// Whether the conversation has had at least one completed turn.
     private var hasConversationHistory: Bool {
@@ -17,52 +18,63 @@ struct PromptPanelView: View {
                       appState.isGenerating ? "Y" : "N",
                       appState.responseText.count,
                       appState.conversationMessages.count)
-        VStack(spacing: 0) {
-            headerBar
-            Divider()
-
-            VStack(spacing: 12) {
-                // Conversation history (visible after first completed turn)
-                if hasConversationHistory {
-                    conversationHistory
-                }
-
-                promptInput
-
-                if !appState.selectedContext.isEmpty && appState.conversationMessages.isEmpty {
-                    contextIndicator
-                }
-
-                // Screenshot preview (visible before first generation)
-                if appState.screenshotImage != nil && !hasConversationHistory {
-                    screenshotIndicator
-                }
-
-                // Quick actions (only before any generation, first turn only)
-                if appState.responseText.isEmpty && !appState.isGenerating && !hasConversationHistory {
-                    quickActions
-                }
-
-                // Error display
-                if let error = appState.errorMessage {
-                    errorBanner(error)
-                }
-
-                // Response area
-                if appState.isGenerating || !appState.responseText.isEmpty {
-                    responseArea
-                }
-
-                // Action bar (when response is ready)
-                if !appState.responseText.isEmpty && !appState.isGenerating {
-                    actionBar
-                }
+        HStack(spacing: 0) {
+            // History sidebar (slides in from left)
+            if showHistorySidebar {
+                HistorySidebarView()
+                    .transition(.move(edge: .leading))
+                Divider()
             }
-            .padding(16)
+
+            // Main prompt content
+            VStack(spacing: 0) {
+                headerBar
+                Divider()
+
+                VStack(spacing: 12) {
+                    // Conversation history (visible after first completed turn)
+                    if hasConversationHistory {
+                        conversationHistory
+                    }
+
+                    promptInput
+
+                    if !appState.selectedContext.isEmpty && appState.conversationMessages.isEmpty {
+                        contextIndicator
+                    }
+
+                    // Screenshot preview (visible before first generation)
+                    if appState.screenshotImage != nil && !hasConversationHistory {
+                        screenshotIndicator
+                    }
+
+                    // Quick actions (only before any generation, first turn only)
+                    if appState.responseText.isEmpty && !appState.isGenerating && !hasConversationHistory {
+                        quickActions
+                    }
+
+                    // Error display
+                    if let error = appState.errorMessage {
+                        errorBanner(error)
+                    }
+
+                    // Response area
+                    if appState.isGenerating || !appState.responseText.isEmpty {
+                        responseArea
+                    }
+
+                    // Action bar (when response is ready)
+                    if !appState.responseText.isEmpty && !appState.isGenerating {
+                        actionBar
+                    }
+                }
+                .padding(16)
+            }
+            .frame(width: appState.panelWidth)
         }
-        .frame(width: appState.panelWidth)
         .frame(minHeight: 120, maxHeight: 900)
         .background(.clear)
+        .animation(.easeInOut(duration: 0.2), value: showHistorySidebar)
         .onAppear {
             isPromptFocused = true
         }
@@ -119,6 +131,19 @@ struct PromptPanelView: View {
             if appState.availableAgents.count > 1 {
                 agentPicker
             }
+
+            // History sidebar toggle
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showHistorySidebar.toggle()
+                }
+            }) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(showHistorySidebar ? .purple : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Session History")
 
             Spacer()
 
@@ -723,9 +748,7 @@ struct PromptPanelView: View {
     private func startNewConversation() {
         NSLog("[GhostType][NewConversation] Resetting conversation")
         appState.wsClient.sendNewConversation()
-        appState.conversationMessages = []
-        appState.conversationMode = .draft
-        appState.clearCurrentResponse()
+        appState.clearConversation()
         isPromptFocused = true
     }
 

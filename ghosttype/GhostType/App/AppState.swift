@@ -79,6 +79,15 @@ class AppState: ObservableObject {
     @Published var conversationMessages: [ConversationMessage] = []
     @Published var conversationMode: ConversationMode = .draft
 
+    // MARK: - Session History
+    var sessionStore = SessionStore()
+    @Published var sessionHistory: [Session] = []
+
+    // MARK: - Agent Selection
+    @Published var availableAgents: [AgentInfo] = []
+    @Published var selectedAgentId: String?
+    var defaultAgentId: String?
+
     /// Dynamic panel width — set to 70% of the active app's window width when the panel opens.
     @Published var panelWidth: CGFloat = 420
 
@@ -141,6 +150,10 @@ class AppState: ObservableObject {
             .sink { [weak self] available in
                 if available {
                     self?.backendStatus = .running
+                    // Fetch agents when backend comes online (or comes back)
+                    if self?.availableAgents.isEmpty == true {
+                        self?.refreshAgents()
+                    }
                 } else if self?.backendStatus == .running {
                     self?.backendStatus = .stopped
                 }
@@ -151,6 +164,8 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newState in self?.ttsState = newState }
             .store(in: &cancellables)
+
+        loadSessionHistory()
     }
 
     /// Returns the config dict to send with each generate request.
@@ -164,6 +179,25 @@ class AppState: ObservableObject {
         if !awsRegion.isEmpty { config["aws_region"] = awsRegion }
 
         return config
+    }
+
+    /// Resolves the effective agent ID: explicit selection > auto-detect from bundle > default.
+    func effectiveAgentId() -> String? {
+        if let selected = selectedAgentId {
+            return selected
+        }
+        if let detected = AgentInfo.agentForBundle(targetBundleID, from: availableAgents) {
+            return detected.id
+        }
+        return defaultAgentId
+    }
+
+    /// Fetches available agents from the backend and populates the agent list.
+    func refreshAgents() {
+        AgentService.fetchAgents { [weak self] agents, defaultId in
+            self?.availableAgents = agents
+            self?.defaultAgentId = defaultId
+        }
     }
 
     func saveSettings() {
@@ -214,11 +248,112 @@ class AppState: ObservableObject {
         return pending.isEmpty ? nil : pending
     }
 
-    /// Full conversation reset — clears history, mode, and response state.
+    /// Full conversation reset — auto-saves session before clearing.
     func clearConversation() {
+        saveCurrentSession()
         conversationMessages = []
         conversationMode = .draft
         clearResponse()
+    }
+
+    // MARK: - Session Persistence
+
+    /// Builds a Session from the current conversation state.
+    /// Returns nil if fewer than 2 messages (need at least 1 user + 1 assistant).
+    func buildSessionFromConversation() -> Session? {
+        guard conversationMessages.count >= 2 else { return nil }
+
+        let firstUserContent = conversationMessages.first(where: { $0.role == "user" })?.content ?? ""
+        let title = Session.generateTitle(from: firstUserContent)
+        let now = Date()
+
+        let sessionMessages = conversationMessages.enumerated().map { index, msg in
+            SessionMessage(
+                id: msg.id.uuidString,
+                role: msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+                context: index == 0 ? (selectedContext.isEmpty ? nil : selectedContext) : nil,
+                screenshotFilename: nil
+            )
+        }
+
+        return Session(
+            id: UUID().uuidString,
+            title: title,
+            createdAt: conversationMessages.first?.timestamp ?? now,
+            updatedAt: conversationMessages.last?.timestamp ?? now,
+            mode: conversationMode == .chat ? "chat" : "draft",
+            agentId: effectiveAgentId(),
+            modelId: modelId,
+            messages: sessionMessages
+        )
+    }
+
+    /// Saves the current conversation as a session (if it has enough messages).
+    /// Also saves any attached screenshot.
+    func saveCurrentSession() {
+        // Archive in-flight response that hasn't been moved to conversationMessages yet
+        if !responseText.isEmpty {
+            appendMessage(role: "assistant", content: responseText)
+        }
+        guard var session = buildSessionFromConversation() else { return }
+
+        // Save screenshot if present
+        if let base64 = screenshotBase64, let data = Data(base64Encoded: base64) {
+            let filename = "\(session.id)_0.jpg"
+            do {
+                try sessionStore.saveScreenshot(data: data, filename: filename)
+                // Update the first user message with the screenshot filename
+                var updatedMessages = session.messages
+                if !updatedMessages.isEmpty {
+                    let first = updatedMessages[0]
+                    updatedMessages[0] = SessionMessage(
+                        id: first.id,
+                        role: first.role,
+                        content: first.content,
+                        timestamp: first.timestamp,
+                        context: first.context,
+                        screenshotFilename: filename
+                    )
+                }
+                session = Session(
+                    id: session.id,
+                    title: session.title,
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
+                    mode: session.mode,
+                    agentId: session.agentId,
+                    modelId: session.modelId,
+                    messages: updatedMessages
+                )
+            } catch {
+                NSLog("[GhostType][AppState] Failed to save screenshot: %@", error.localizedDescription)
+            }
+        }
+
+        do {
+            try sessionStore.saveSession(session)
+            NSLog("[GhostType][AppState] Saved session %@ (%d messages)", session.id, session.messages.count)
+            loadSessionHistory()
+        } catch {
+            NSLog("[GhostType][AppState] Failed to save session: %@", error.localizedDescription)
+        }
+    }
+
+    /// Populates sessionHistory from disk.
+    func loadSessionHistory() {
+        sessionHistory = sessionStore.loadSessions()
+    }
+
+    /// Deletes a session by ID and refreshes the list.
+    func deleteSession(id: String) {
+        do {
+            try sessionStore.deleteSession(id: id)
+        } catch {
+            NSLog("[GhostType][AppState] Failed to delete session %@: %@", id, error.localizedDescription)
+        }
+        loadSessionHistory()
     }
 
     // MARK: - Token Batching
