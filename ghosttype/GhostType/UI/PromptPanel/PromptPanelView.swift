@@ -115,6 +115,11 @@ struct PromptPanelView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
 
+            // Agent picker (when agents are available)
+            if appState.availableAgents.count > 1 {
+                agentPicker
+            }
+
             Spacer()
 
             if appState.isGenerating {
@@ -255,6 +260,54 @@ struct PromptPanelView: View {
         return appState.selectedContext.isEmpty
             ? "What do you want to write?"
             : "How should this be rewritten? (Enter for default)"
+    }
+
+    // MARK: - Agent Picker
+
+    /// The display name for the currently effective agent.
+    private var effectiveAgentName: String {
+        let agentId = appState.effectiveAgentId()
+        return appState.availableAgents.first(where: { $0.id == agentId })?.name
+            ?? "Auto"
+    }
+
+    private var agentPicker: some View {
+        Menu {
+            // Auto option (clears manual selection)
+            Button(action: { appState.selectedAgentId = nil }) {
+                HStack {
+                    Text("Auto")
+                    if appState.selectedAgentId == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+            Divider()
+            ForEach(appState.availableAgents) { agent in
+                Button(action: { appState.selectedAgentId = agent.id }) {
+                    HStack {
+                        Text(agent.name)
+                        if appState.selectedAgentId == agent.id {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "person.2.circle")
+                    .font(.system(size: 9))
+                Text(effectiveAgentName)
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     // MARK: - Context Indicator
@@ -610,10 +663,13 @@ struct PromptPanelView: View {
         // Send screenshot only on first turn (most relevant context)
         let screenshot = appState.conversationMessages.count <= 1 ? appState.screenshotBase64 : nil
 
+        // Resolve which agent to use
+        let agentId = appState.effectiveAgentId()
+
         // Route generation through selected backend
         if appState.backendStatus == .running {
-            NSLog("[GhostType][Submit] Using local backend: mode=%@, mode_type=%@, screenshot=%@", mode, modeTypeStr, screenshot != nil ? "YES" : "NO")
-            generateWithBackend(prompt: effectivePrompt, context: appState.selectedContext, mode: mode, modeType: modeTypeStr, screenshot: screenshot)
+            NSLog("[GhostType][Submit] Using local backend: mode=%@, mode_type=%@, screenshot=%@, agent=%@", mode, modeTypeStr, screenshot != nil ? "YES" : "NO", agentId ?? "default")
+            generateWithBackend(prompt: effectivePrompt, context: appState.selectedContext, mode: mode, modeType: modeTypeStr, screenshot: screenshot, agent: agentId)
         } else {
             NSLog("[GhostType][Submit] Backend unavailable, using StubAgent")
             generateWithStub(prompt: effectivePrompt, context: appState.selectedContext)
@@ -675,7 +731,7 @@ struct PromptPanelView: View {
 
     // MARK: - Backend Generation
 
-    private func generateWithBackend(prompt: String, context: String, mode: String, modeType: String, screenshot: String? = nil) {
+    private func generateWithBackend(prompt: String, context: String, mode: String, modeType: String, screenshot: String? = nil, agent: String? = nil) {
         let wsClient = appState.wsClient
 
         NSLog("[GhostType][Generate] generateWithBackend — mode=%@, modeType=%@, promptLen=%d, contextLen=%d, hasScreenshot=%@, wsConnected=%@, backendStatus=%@",
@@ -716,7 +772,7 @@ struct PromptPanelView: View {
         }
 
         let config = appState.modelConfigForRequest()
-        wsClient.generate(prompt: prompt, context: context, mode: mode, modeType: modeType, config: config, screenshot: screenshot)
+        wsClient.generate(prompt: prompt, context: context, mode: mode, modeType: modeType, config: config, screenshot: screenshot, agent: agent)
     }
 
     // MARK: - Stub Fallback
