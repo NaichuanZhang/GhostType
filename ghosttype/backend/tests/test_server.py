@@ -968,6 +968,229 @@ class TestCancelDuringGeneration:
 # ---------------------------------------------------------------------------
 # Generation timeout tests
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Tool event forwarding tests
+# ---------------------------------------------------------------------------
+class TestToolEventForwarding:
+    def _make_handler(self):
+        """Create a StreamingCallbackHandler with mocked _send_ws_message."""
+        from server import StreamingCallbackHandler
+
+        handler = StreamingCallbackHandler(
+            websocket=mock.MagicMock(),
+            loop=asyncio.new_event_loop(),
+            cancel_event=threading.Event(),
+        )
+        handler._send_ws_message = mock.MagicMock()
+        return handler
+
+    def test_tool_start_sent_on_content_block_start(self):
+        """Tool use start event should send tool_start message."""
+        handler = self._make_handler()
+
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "rewrite_text",
+                        "toolUseId": "t1",
+                    }
+                }
+            }
+        })
+
+        handler._send_ws_message.assert_called_once_with({
+            "type": "tool_start",
+            "tool_name": "rewrite_text",
+            "tool_id": "t1",
+        })
+
+    def test_tool_start_does_not_send_token(self):
+        """Tool start events should not produce token messages."""
+        handler = self._make_handler()
+
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "count_words",
+                        "toolUseId": "t2",
+                    }
+                }
+            }
+        })
+
+        # Only tool_start should be sent, no token
+        assert handler._send_ws_message.call_count == 1
+        msg = handler._send_ws_message.call_args[0][0]
+        assert msg["type"] == "tool_start"
+        assert handler.token_count == 0
+
+    def test_tool_done_sent_on_text_after_tool(self):
+        """When text data arrives after a tool_start, the active tool should be marked done."""
+        handler = self._make_handler()
+
+        # Start a tool
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "fix_grammar",
+                        "toolUseId": "t3",
+                    }
+                }
+            }
+        })
+        handler._send_ws_message.reset_mock()
+
+        # Now text arrives — should trigger tool_done then token
+        handler(data="Fixed text here")
+
+        calls = handler._send_ws_message.call_args_list
+        assert len(calls) == 2
+        # First call: tool_done
+        assert calls[0][0][0]["type"] == "tool_done"
+        assert calls[0][0][0]["tool_name"] == "fix_grammar"
+        assert calls[0][0][0]["tool_id"] == "t3"
+        # Second call: token
+        assert calls[1][0][0]["type"] == "token"
+        assert calls[1][0][0]["content"] == "Fixed text here"
+
+    def test_tool_done_sent_on_stream_complete(self):
+        """Active tool should be marked done when stream completes."""
+        handler = self._make_handler()
+
+        # Start a tool
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "translate_text",
+                        "toolUseId": "t4",
+                    }
+                }
+            }
+        })
+        handler._send_ws_message.reset_mock()
+
+        # Stream completes with data — tool_done should fire
+        handler(data="translated result", complete=True)
+
+        calls = handler._send_ws_message.call_args_list
+        types = [c[0][0]["type"] for c in calls]
+        assert "tool_done" in types
+        assert "token" in types
+
+    def test_tool_done_sent_on_new_tool_start(self):
+        """Starting a new tool should close the previous one."""
+        handler = self._make_handler()
+
+        # Start first tool
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "count_words",
+                        "toolUseId": "t5",
+                    }
+                }
+            }
+        })
+        handler._send_ws_message.reset_mock()
+
+        # Start second tool — first should be done
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "change_tone",
+                        "toolUseId": "t6",
+                    }
+                }
+            }
+        })
+
+        calls = handler._send_ws_message.call_args_list
+        assert len(calls) == 2
+        # First: done for t5
+        assert calls[0][0][0]["type"] == "tool_done"
+        assert calls[0][0][0]["tool_id"] == "t5"
+        # Second: start for t6
+        assert calls[1][0][0]["type"] == "tool_start"
+        assert calls[1][0][0]["tool_id"] == "t6"
+
+    def test_active_tool_tracking(self):
+        """Handler should track active tool ID correctly."""
+        handler = self._make_handler()
+
+        assert handler._active_tool_id is None
+        assert handler._active_tool_name is None
+
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "rewrite_text",
+                        "toolUseId": "t7",
+                    }
+                }
+            }
+        })
+
+        assert handler._active_tool_id == "t7"
+        assert handler._active_tool_name == "rewrite_text"
+
+    def test_text_tokens_still_work(self):
+        """Regular text streaming should work as before."""
+        handler = self._make_handler()
+
+        handler(data="Hello ")
+        handler(data="world")
+
+        assert handler.token_count == 2
+        calls = handler._send_ws_message.call_args_list
+        assert all(c[0][0]["type"] == "token" for c in calls)
+
+    def test_no_tool_events_on_empty_event(self):
+        """Empty event dict should not trigger tool events."""
+        handler = self._make_handler()
+
+        handler(event={})
+        handler._send_ws_message.assert_not_called()
+
+    def test_tool_input_accumulated(self):
+        """Tool input from current_tool_use kwargs should be tracked."""
+        handler = self._make_handler()
+
+        # Start tool
+        handler(event={
+            "contentBlockStart": {
+                "start": {
+                    "toolUse": {
+                        "name": "rewrite_text",
+                        "toolUseId": "t8",
+                    }
+                }
+            }
+        })
+        handler._send_ws_message.reset_mock()
+
+        # Simulate input streaming
+        handler(current_tool_use={
+            "name": "rewrite_text",
+            "toolUseId": "t8",
+            "input": {"text": "hello", "style": "formal"},
+        })
+
+        # Complete — tool_done should include input
+        handler(data="rewritten text", complete=True)
+
+        calls = handler._send_ws_message.call_args_list
+        done_calls = [c for c in calls if c[0][0]["type"] == "tool_done"]
+        assert len(done_calls) == 1
+        assert "tool_input" in done_calls[0][0][0]
+
+
 class TestGenerationTimeout:
     def test_timeout_sends_error_and_resets_agent(self):
         """When generation exceeds GENERATION_TIMEOUT, server should send

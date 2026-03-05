@@ -18,6 +18,69 @@ enum ConversationMode {
     case chat     // Conversational Q&A
 }
 
+// MARK: - Tool Call Models
+
+enum ToolStatus: Equatable {
+    case running
+    case completed
+}
+
+struct ToolCallInfo: Identifiable, Equatable {
+    let id: String
+    let name: String
+    var status: ToolStatus
+    let startTime: Date
+    var toolInput: String?
+
+    init(id: String, name: String, status: ToolStatus = .running, startTime: Date = Date(), toolInput: String? = nil) {
+        self.id = id
+        self.name = name
+        self.status = status
+        self.startTime = startTime
+        self.toolInput = toolInput
+    }
+
+    /// Human-readable display name computed from the raw tool name.
+    var displayName: String {
+        Self.displayName(for: name)
+    }
+
+    /// Returns a new copy with updated status (immutable pattern).
+    func withStatus(_ newStatus: ToolStatus) -> ToolCallInfo {
+        ToolCallInfo(id: id, name: name, status: newStatus, startTime: startTime, toolInput: toolInput)
+    }
+
+    /// Returns a new copy with tool input set (immutable pattern).
+    func withInput(_ input: String?) -> ToolCallInfo {
+        ToolCallInfo(id: id, name: name, status: status, startTime: startTime, toolInput: input)
+    }
+
+    // MARK: - Display Name Mapping
+
+    private static let knownNames: [String: String] = [
+        "rewrite_text": "Rewriting text",
+        "fix_grammar": "Fixing grammar",
+        "translate_text": "Translating",
+        "count_words": "Counting words",
+        "extract_key_points": "Extracting key points",
+        "change_tone": "Changing tone",
+        "save_memory": "Saving to memory",
+        "recall_memories": "Recalling memories",
+        "forget_memory": "Forgetting memory",
+    ]
+
+    static func displayName(for toolName: String) -> String {
+        if let known = knownNames[toolName] {
+            return known
+        }
+        // Fallback: title-case with underscores replaced by spaces
+        return toolName
+            .split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+            .joined(separator: " ")
+    }
+}
+
 struct ConversationMessage: Identifiable {
     let id = UUID()
     let role: String        // "user" or "assistant"
@@ -78,6 +141,10 @@ class AppState: ObservableObject {
     @Published var responseViewTab: ResponseViewTab = .generated
     @Published var conversationMessages: [ConversationMessage] = []
     @Published var conversationMode: ConversationMode = .draft
+
+    // MARK: - Tool Call Tracking
+    @Published var activeToolCalls: [ToolCallInfo] = []
+    @Published var isToolCallsExpanded: Bool = false
 
     // MARK: - Session History
     var sessionStore = SessionStore()
@@ -221,6 +288,8 @@ class AppState: ObservableObject {
         responseViewTab = .generated
         screenshotBase64 = nil
         screenshotImage = nil
+        activeToolCalls = []
+        isToolCallsExpanded = false
     }
 
     /// Clears current response but keeps conversation history (for multi-turn).
@@ -392,5 +461,28 @@ class AppState: ObservableObject {
         let flushed = tokenBuffer
         tokenBuffer = ""
         responseText += flushed
+    }
+
+    // MARK: - Tool Call Handling
+
+    /// Called when a tool invocation starts.
+    func handleToolStart(name: String, id: String) {
+        let info = ToolCallInfo(id: id, name: name)
+        activeToolCalls = activeToolCalls + [info]
+    }
+
+    /// Called when a tool invocation completes.
+    func handleToolDone(name: String, id: String, input: String?) {
+        activeToolCalls = activeToolCalls.map { call in
+            guard call.id == id else { return call }
+            return call.withStatus(.completed).withInput(input)
+        }
+    }
+
+    /// Mark all remaining running tools as completed (e.g. on generation finish).
+    func completeAllToolCalls() {
+        activeToolCalls = activeToolCalls.map { call in
+            call.status == .running ? call.withStatus(.completed) : call
+        }
     }
 }

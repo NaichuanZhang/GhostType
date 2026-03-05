@@ -18,6 +18,8 @@ class WebSocketClient: ObservableObject {
     var onComplete: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onCancelled: (() -> Void)?
+    /// Called for tool events: (eventType: "tool_start"|"tool_done", toolName, toolId, toolInput?)
+    var onToolEvent: ((String, String, String, String?) -> Void)?
 
     init(host: String = "127.0.0.1", port: Int = 8420) {
         self.baseURL = "ws://\(host):\(port)"
@@ -220,6 +222,11 @@ class WebSocketClient: ObservableObject {
                 self?.onCancelled?()
             case "conversation_reset":
                 NSLog("[GhostType][WS] Conversation reset confirmed by server")
+            case "tool_start", "tool_done":
+                let toolName = json["tool_name"] as? String ?? "unknown"
+                let toolId = json["tool_id"] as? String ?? ""
+                let toolInput = json["tool_input"] as? String
+                self?.onToolEvent?(type, toolName, toolId, toolInput)
             default:
                 NSLog("[GhostType][WS] Unknown message type: %@", type)
             }

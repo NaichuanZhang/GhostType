@@ -113,6 +113,25 @@ class StreamingCallbackHandler:
         self.token_count = 0
         self.first_token_time: float | None = None
         self.start_time: float = time.monotonic()
+        # Tool call tracking
+        self._active_tool_id: str | None = None
+        self._active_tool_name: str | None = None
+        self._active_tool_input: dict | None = None
+
+    def _close_active_tool(self):
+        """Send tool_done for the currently active tool, if any."""
+        if self._active_tool_id is not None:
+            msg = {
+                "type": "tool_done",
+                "tool_name": self._active_tool_name or "unknown",
+                "tool_id": self._active_tool_id,
+            }
+            if self._active_tool_input is not None:
+                msg["tool_input"] = json.dumps(self._active_tool_input)
+            self._send_ws_message(msg)
+            self._active_tool_id = None
+            self._active_tool_name = None
+            self._active_tool_input = None
 
     def __call__(self, **kwargs):
         # Check for cancellation before doing any work
@@ -120,8 +139,40 @@ class StreamingCallbackHandler:
             logger.debug("Cancel event detected in callback handler")
             raise CancellationError("Generation cancelled by client")
 
+        # --- Tool call start ---
+        event = kwargs.get("event") or {}
+        tool_use = (
+            event.get("contentBlockStart", {})
+            .get("start", {})
+            .get("toolUse")
+        )
+        if tool_use:
+            # Close previous tool if one was active
+            self._close_active_tool()
+            tool_name = tool_use.get("name", "unknown")
+            tool_id = tool_use.get("toolUseId", "")
+            self._active_tool_id = tool_id
+            self._active_tool_name = tool_name
+            self._send_ws_message({
+                "type": "tool_start",
+                "tool_name": tool_name,
+                "tool_id": tool_id,
+            })
+            return  # tool start events don't carry text data
+
+        # --- Tool input streaming ---
+        current_tool = kwargs.get("current_tool_use")
+        if current_tool and self._active_tool_id:
+            tool_input = current_tool.get("input")
+            if tool_input:
+                self._active_tool_input = tool_input
+
         data = kwargs.get("data", "")
         complete = kwargs.get("complete", False)
+
+        # Close active tool when text data arrives or stream completes
+        if data and self._active_tool_id:
+            self._close_active_tool()
 
         if data:
             if self.first_token_time is None:
@@ -131,6 +182,9 @@ class StreamingCallbackHandler:
 
             self.token_count += 1
             self._send_ws_message({"type": "token", "content": data})
+
+        if complete and self._active_tool_id:
+            self._close_active_tool()
 
         if complete and data:
             logger.debug(

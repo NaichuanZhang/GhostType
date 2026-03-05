@@ -480,6 +480,14 @@ struct PromptPanelView: View {
                 responseToggle
             }
 
+            // Tool call chips (visible when any tools have been invoked)
+            if !appState.activeToolCalls.isEmpty {
+                ToolCallsView(
+                    toolCalls: appState.activeToolCalls,
+                    isExpanded: $appState.isToolCallsExpanded
+                )
+            }
+
             HStack(alignment: .top, spacing: 8) {
                 AvatarView(size: 28, isAnimating: appState.isGenerating)
                     .padding(.top, 8)
@@ -680,6 +688,8 @@ struct PromptPanelView: View {
         appState.isGenerating = true
         appState.errorMessage = nil
         appState.responseViewTab = .generated
+        appState.activeToolCalls = []
+        appState.isToolCallsExpanded = false
 
         // Start token batching to reduce view updates during streaming
         appState.startTokenBatching()
@@ -769,6 +779,7 @@ struct PromptPanelView: View {
 
         wsClient.onComplete = { [weak appState] fullResponse in
             appState?.stopTokenBatching()
+            appState?.completeAllToolCalls()
             let streamedLen = appState?.responseText.count ?? 0
             NSLog("[GhostType][WS] Generation complete, response_len=%d, streamed_len=%d",
                   fullResponse.count, streamedLen)
@@ -790,8 +801,20 @@ struct PromptPanelView: View {
 
         wsClient.onCancelled = { [weak appState] in
             appState?.stopTokenBatching()
+            appState?.completeAllToolCalls()
             NSLog("[GhostType][WS] Cancelled")
             appState?.isGenerating = false
+        }
+
+        wsClient.onToolEvent = { [weak appState] eventType, toolName, toolId, toolInput in
+            switch eventType {
+            case "tool_start":
+                appState?.handleToolStart(name: toolName, id: toolId)
+            case "tool_done":
+                appState?.handleToolDone(name: toolName, id: toolId, input: toolInput)
+            default:
+                break
+            }
         }
 
         let config = appState.modelConfigForRequest()
