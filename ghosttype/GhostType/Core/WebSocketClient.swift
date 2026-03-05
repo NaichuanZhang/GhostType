@@ -99,7 +99,7 @@ class WebSocketClient: ObservableObject {
 
     func generate(prompt: String, context: String = "", mode: String = "generate",
                    modeType: String? = nil, config: [String: String]? = nil,
-                   screenshot: String? = nil) {
+                   screenshot: String? = nil, agent: String? = nil) {
         ensureConnected()
 
         var request: [String: Any] = [
@@ -118,6 +118,10 @@ class WebSocketClient: ObservableObject {
 
         if let screenshot = screenshot {
             request["screenshot"] = screenshot
+        }
+
+        if let agent = agent {
+            request["agent"] = agent
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: request),

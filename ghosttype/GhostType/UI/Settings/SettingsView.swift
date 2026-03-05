@@ -85,6 +85,23 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("History") {
+                HStack {
+                    Text("Saved Sessions")
+                    Spacer()
+                    Text("\(appState.sessionHistory.count)")
+                        .foregroundStyle(.secondary)
+                }
+                if !appState.sessionHistory.isEmpty {
+                    Button("Clear All History", role: .destructive) {
+                        let ids = appState.sessionHistory.map(\.id)
+                        for id in ids {
+                            appState.deleteSession(id: id)
+                        }
+                    }
+                }
+            }
+
             Section("Text-to-Speech (MiniMax)") {
                 SecureField("API Key", text: $appState.minimaxApiKey)
                     .textFieldStyle(.roundedBorder)

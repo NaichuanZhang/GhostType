@@ -1,0 +1,36 @@
+agents:
+  - id: "general"
+    name: "General Assistant"
+    description: "All-purpose writing and chat assistant"
+    system_prompt_file: "system.txt"
+    tools: [rewrite_text, fix_grammar, translate_text]
+    mcp_servers: [searxng]
+    supported_modes: [draft, chat]
+    is_default: true
+
+  - id: "coding"
+    name: "Code Assistant"
+    description: "Programming help, code review, and technical explanations"
+    system_prompt_file: "coding.txt"
+    tools: [count_words]
+    mcp_servers: []
+    supported_modes: [chat]
+    app_mappings:
+      - "com.microsoft.VSCode"
+      - "com.apple.dt.Xcode"
+      - "com.jetbrains"
+      - "com.sublimetext"
+      - "com.googlecode.iterm2"
+
+  - id: "email"
+    name: "Email & Communication"
+    description: "Email drafting, tone adjustment, and professional communication"
+    system_prompt_file: "email.txt"
+    tools: [rewrite_text, change_tone, fix_grammar]
+    mcp_servers: []
+    supported_modes: [draft, chat]
+    app_mappings:
+      - "com.tinyspeck.slackmacgap"
+      - "com.microsoft.Outlook"
+      - "com.apple.mail"
+      - "com.readdle.smartemail.mac"

@@ -102,3 +102,34 @@ class MCPManager:
                 logger.warning("Failed to create MCPClient for server '%s', skipping", name, exc_info=True)
 
         return clients
+
+    def get_mcp_tools_by_names(self, server_names: list[str]) -> list[MCPClient]:
+        """Create MCPClient instances only for the specified server names.
+
+        Like get_mcp_tools(), but filtered to only include servers whose
+        name appears in ``server_names``. Unknown names are silently skipped.
+        """
+        if not server_names:
+            return []
+
+        requested = set(server_names)
+        clients: list[MCPClient] = []
+        for name, server_cfg in self._enabled_servers().items():
+            if name not in requested:
+                continue
+            try:
+                client = MCPClient(
+                    lambda sc=server_cfg: stdio_client(
+                        StdioServerParameters(
+                            command=sc["command"],
+                            args=sc.get("args", []),
+                            env=sc.get("env"),
+                        )
+                    )
+                )
+                clients.append(client)
+                logger.debug("Created MCPClient for server '%s' (filtered)", name)
+            except Exception:
+                logger.warning("Failed to create MCPClient for server '%s', skipping", name, exc_info=True)
+
+        return clients

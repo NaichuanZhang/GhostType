@@ -318,6 +318,24 @@ class TestWebSocketEndpoint:
         assert "provider" in data
         assert "model" in data
 
+    def test_agents_endpoint(self):
+        from fastapi.testclient import TestClient
+        from server import app
+
+        client = TestClient(app)
+        resp = client.get("/agents")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data
+        assert "default_agent_id" in data
+        assert isinstance(data["agents"], list)
+        assert len(data["agents"]) > 0
+        # Each agent has required fields
+        for agent in data["agents"]:
+            assert "id" in agent
+            assert "name" in agent
+            assert "supported_modes" in agent
+
     def test_generate_returns_done(self, mock_agent):
         from fastapi.testclient import TestClient
         from server import app
@@ -595,6 +613,124 @@ class TestMultiTurnConversation:
                         break
 
                 # Agent should have been recreated after reset
+                assert mock_create.call_count == 2
+
+    def test_agent_field_selects_agent(self):
+        """Sending an 'agent' field should use that agent's definition."""
+        from fastapi.testclient import TestClient
+        from server import app
+
+        with mock.patch("server.create_agent") as mock_create:
+            agent = mock.MagicMock()
+            agent.return_value = "Response"
+            mock_create.return_value = agent
+
+            client = TestClient(app)
+
+            with client.websocket_connect("/generate") as ws:
+                ws.send_text(json.dumps({
+                    "prompt": "Hello",
+                    "mode": "generate",
+                    "agent": "coding",
+                }))
+
+                for _ in range(20):
+                    msg = json.loads(ws.receive_text())
+                    if msg["type"] in ("done", "error"):
+                        break
+
+                # create_agent should have been called with agent_def
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs.get("agent_def") is not None
+                assert call_kwargs["agent_def"].id == "coding"
+
+    def test_unknown_agent_returns_error(self):
+        """Requesting an unknown agent should return an error message."""
+        from fastapi.testclient import TestClient
+        from server import app
+
+        with mock.patch("server.create_agent") as mock_create:
+            agent = mock.MagicMock()
+            agent.return_value = "Response"
+            mock_create.return_value = agent
+
+            client = TestClient(app)
+
+            with client.websocket_connect("/generate") as ws:
+                ws.send_text(json.dumps({
+                    "prompt": "Hello",
+                    "mode": "generate",
+                    "agent": "nonexistent_agent",
+                }))
+
+                msg = json.loads(ws.receive_text())
+                assert msg["type"] == "error"
+                assert "nonexistent_agent" in msg["content"]
+
+    def test_missing_agent_field_uses_default(self):
+        """When no 'agent' field is sent, default agent is used."""
+        from fastapi.testclient import TestClient
+        from server import app
+
+        with mock.patch("server.create_agent") as mock_create:
+            agent = mock.MagicMock()
+            agent.return_value = "Response"
+            mock_create.return_value = agent
+
+            client = TestClient(app)
+
+            with client.websocket_connect("/generate") as ws:
+                ws.send_text(json.dumps({
+                    "prompt": "Hello",
+                    "mode": "generate",
+                }))
+
+                for _ in range(20):
+                    msg = json.loads(ws.receive_text())
+                    if msg["type"] in ("done", "error"):
+                        break
+
+                # Should use default agent definition
+                call_kwargs = mock_create.call_args[1]
+                agent_def = call_kwargs.get("agent_def")
+                assert agent_def is not None
+                assert agent_def.is_default is True
+
+    def test_agent_change_recreates_agent(self):
+        """Changing the agent field should recreate the agent."""
+        from fastapi.testclient import TestClient
+        from server import app
+
+        with mock.patch("server.create_agent") as mock_create:
+            agent = mock.MagicMock()
+            agent.return_value = "Response"
+            mock_create.return_value = agent
+
+            client = TestClient(app)
+
+            with client.websocket_connect("/generate") as ws:
+                # First message with default agent
+                ws.send_text(json.dumps({
+                    "prompt": "Hello",
+                    "mode": "generate",
+                }))
+                for _ in range(20):
+                    msg = json.loads(ws.receive_text())
+                    if msg["type"] in ("done", "error"):
+                        break
+                assert mock_create.call_count == 1
+
+                # Second message with different agent
+                ws.send_text(json.dumps({
+                    "prompt": "Hello again",
+                    "mode": "generate",
+                    "agent": "coding",
+                }))
+                for _ in range(20):
+                    msg = json.loads(ws.receive_text())
+                    if msg["type"] in ("done", "error"):
+                        break
+
                 assert mock_create.call_count == 2
 
     def test_config_change_recreates_agent(self):

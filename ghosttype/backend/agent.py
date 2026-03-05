@@ -1,15 +1,28 @@
 """Strands Agent configuration for GhostType."""
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_registry import AgentDefinition
 
 from strands import Agent, tool
 
 from config import config
+from tools.memory_tools import (
+    build_memory_context,
+    forget_memory,
+    recall_memories,
+    save_memory,
+)
 
 logger = logging.getLogger("ghosttype.agent")
+
+MEMORY_TOOLS = [save_memory, recall_memories, forget_memory]
 
 # Load system prompt from file (single source of truth)
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -49,14 +62,18 @@ class ModelConfig:
         return self.aws_region or config.aws_region
 
 
-def _load_system_prompt(mode_type: str = "draft") -> str:
+def _load_system_prompt(mode_type: str = "draft", prompt_file_name: str | None = None) -> str:
     """Load the system prompt for the given mode type.
 
     Args:
         mode_type: "draft" loads prompts/system.txt (restrictive writing prompt),
                    "chat" loads prompts/chat.txt (conversational prompt).
+        prompt_file_name: If provided, loads this file instead of the mode-based default.
     """
-    filename = "chat.txt" if mode_type == "chat" else "system.txt"
+    if prompt_file_name:
+        filename = prompt_file_name
+    else:
+        filename = "chat.txt" if mode_type == "chat" else "system.txt"
     prompt_file = _PROMPTS_DIR / filename
     if prompt_file.exists():
         text = prompt_file.read_text().strip()
@@ -163,6 +180,7 @@ def create_agent(
     model_config: ModelConfig | None = None,
     mode_type: str = "draft",
     mcp_tools: list | None = None,
+    agent_def: "AgentDefinition | None" = None,
 ) -> Agent:
     """Create and configure the GhostType agent.
 
@@ -174,16 +192,36 @@ def create_agent(
                    "chat" for conversational Q&A (relaxed prompt).
         mcp_tools: Optional list of MCPClient instances (ToolProviders) to
                    merge into the agent's tools alongside the built-in tools.
+        agent_def: Optional AgentDefinition specifying tools and prompt file.
+                   When provided, uses the definition's tools and prompt instead
+                   of the hardcoded defaults.
     """
     model = create_model(model_config)
-    system_prompt = _load_system_prompt(mode_type)
+
+    # Resolve system prompt — agent_def's prompt file takes precedence
+    prompt_file_name = agent_def.system_prompt_file if agent_def else None
+    system_prompt = _load_system_prompt(mode_type, prompt_file_name=prompt_file_name)
+
+    # Inject persisted memories into system prompt
+    memory_context = build_memory_context()
+    if memory_context:
+        system_prompt = system_prompt + memory_context
 
     # Use null handler by default so agent doesn't print to stdout
     from strands.handlers.callback_handler import null_callback_handler
 
     handler = callback_handler if callback_handler is not None else null_callback_handler
 
-    tools: list = [rewrite_text, fix_grammar, translate_text]
+    # Resolve tools — agent_def's tool list takes precedence over defaults
+    if agent_def:
+        from tool_registry import resolve_tools
+        tools: list = resolve_tools(agent_def.tools)
+    else:
+        tools = [rewrite_text, fix_grammar, translate_text]
+
+    # Memory tools are always available (cross-cutting concern)
+    tools.extend(MEMORY_TOOLS)
+
     if mcp_tools:
         tools.extend(mcp_tools)
 
@@ -194,5 +232,6 @@ def create_agent(
         callback_handler=handler,
     )
 
-    logger.debug("Agent created: mode_type=%s, tools=%d", mode_type, len(agent.tool_registry.get_all_tools_config()))
+    agent_id = agent_def.id if agent_def else "default"
+    logger.debug("Agent created: id=%s, mode_type=%s, tools=%d", agent_id, mode_type, len(agent.tool_registry.get_all_tools_config()))
     return agent

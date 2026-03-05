@@ -14,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import ModelConfig, create_agent
+from agent_registry import AgentRegistry
 from config import config
 from mcp_manager import MCPManager
 
@@ -28,9 +29,10 @@ logging.basicConfig(
 logger = logging.getLogger("ghosttype.server")
 
 # ---------------------------------------------------------------------------
-# MCP server lifecycle
+# MCP server lifecycle & Agent registry
 # ---------------------------------------------------------------------------
 mcp_manager = MCPManager()
+agent_registry = AgentRegistry()
 
 
 @asynccontextmanager
@@ -64,6 +66,19 @@ async def health():
         "status": "ok",
         "provider": config.model_provider,
         "model": config.model_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Agents endpoint
+# ---------------------------------------------------------------------------
+@app.get("/agents")
+async def agents():
+    """Return available agent definitions."""
+    snapshot = agent_registry.snapshot()
+    return {
+        "agents": snapshot.to_dicts(),
+        "default_agent_id": snapshot.default_agent_id,
     }
 
 
@@ -225,10 +240,11 @@ async def generate(websocket: WebSocket):
     logger.info("Client connected")
 
     # One agent per connection (enables multi-turn follow-ups within a session).
-    # Agent is recreated only when config or mode type changes.
+    # Agent is recreated only when config, mode type, or agent id changes.
     agent = None
     current_config: ModelConfig | None = None
     current_mode_type: str | None = None
+    current_agent_id: str | None = None
 
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
@@ -260,6 +276,7 @@ async def generate(websocket: WebSocket):
                 agent = None
                 current_config = None
                 current_mode_type = None
+                current_agent_id = None
                 await websocket.send_text(json.dumps({"type": "conversation_reset"}))
                 continue
 
@@ -295,6 +312,17 @@ async def generate(websocket: WebSocket):
                 len(prompt), len(context), "yes" if has_screenshot else "no",
             )
 
+            # Resolve agent definition
+            registry_snapshot = agent_registry.snapshot()
+            requested_agent_id = request.get("agent") or registry_snapshot.default_agent_id
+            agent_def = registry_snapshot.get(requested_agent_id)
+            if agent_def is None:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "content": f"Unknown agent: {requested_agent_id}",
+                }))
+                continue
+
             # Create callback handler for this request (per-request state)
             handler = StreamingCallbackHandler(
                 websocket=websocket,
@@ -302,20 +330,29 @@ async def generate(websocket: WebSocket):
                 cancel_event=cancel_event,
             )
 
-            # Recreate agent if config or mode type changed; otherwise reuse
-            if agent is None or model_config != current_config or mode_type != current_mode_type:
+            # Recreate agent if config, mode type, or agent changed; otherwise reuse
+            agent_changed = requested_agent_id != current_agent_id
+            if agent is None or model_config != current_config or mode_type != current_mode_type or agent_changed:
                 logger.info(
-                    "Creating new agent: config_changed=%s, mode_changed=%s",
+                    "Creating new agent: config_changed=%s, mode_changed=%s, agent_changed=%s (id=%s)",
                     model_config != current_config, mode_type != current_mode_type,
+                    agent_changed, requested_agent_id,
                 )
+                # Resolve MCP tools — filter by agent's mcp_servers if specified
+                if agent_def.mcp_servers:
+                    mcp_tools = mcp_manager.get_mcp_tools_by_names(agent_def.mcp_servers)
+                else:
+                    mcp_tools = mcp_manager.get_mcp_tools()
                 agent = create_agent(
                     callback_handler=handler,
                     model_config=model_config,
                     mode_type=mode_type,
-                    mcp_tools=mcp_manager.get_mcp_tools(),
+                    mcp_tools=mcp_tools,
+                    agent_def=agent_def,
                 )
                 current_config = model_config
                 current_mode_type = mode_type
+                current_agent_id = requested_agent_id
             else:
                 # Reuse agent (preserves conversation history), just update handler
                 agent.callback_handler = handler
@@ -400,6 +437,7 @@ async def generate(websocket: WebSocket):
                             agent = None
                             current_config = None
                             current_mode_type = None
+                            current_agent_id = None
 
                 # --- Collect agent result ---
                 if timed_out:
@@ -439,6 +477,7 @@ async def generate(websocket: WebSocket):
                 agent = None
                 current_config = None
                 current_mode_type = None
+                current_agent_id = None
                 await websocket.send_text(json.dumps({
                     "type": "error",
                     "content": "Generation timed out. Try a shorter conversation or start a new one.",

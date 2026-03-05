@@ -185,6 +185,57 @@ class TestGetMcpTools:
         assert tools1[0] is not tools2[0]
 
 
+class TestGetMcpToolsByNames:
+    def _make_config(self, tmp_path, servers):
+        config_file = tmp_path / "mcp_config.json"
+        config_file.write_text(json.dumps({"servers": servers}))
+        return config_file
+
+    def test_filters_by_server_name(self, tmp_path):
+        config_file = self._make_config(tmp_path, {
+            "searxng": {"command": "mcp-searxng", "enabled": True},
+            "github": {"command": "mcp-github", "enabled": True},
+            "slack": {"command": "mcp-slack", "enabled": True},
+        })
+
+        from mcp_manager import MCPManager
+
+        manager = MCPManager(config_path=config_file)
+        mock_client_a = mock.MagicMock()
+        mock_client_b = mock.MagicMock()
+        mock_client_c = mock.MagicMock()
+
+        with mock.patch("mcp_manager.MCPClient", side_effect=[mock_client_a, mock_client_b, mock_client_c]):
+            tools = manager.get_mcp_tools_by_names(["searxng", "slack"])
+
+        assert len(tools) == 2
+
+    def test_empty_names_returns_empty(self, tmp_path):
+        config_file = self._make_config(tmp_path, {
+            "searxng": {"command": "mcp-searxng", "enabled": True},
+        })
+
+        from mcp_manager import MCPManager
+
+        manager = MCPManager(config_path=config_file)
+        tools = manager.get_mcp_tools_by_names([])
+        assert tools == []
+
+    def test_unknown_name_skipped(self, tmp_path):
+        config_file = self._make_config(tmp_path, {
+            "searxng": {"command": "mcp-searxng", "enabled": True},
+        })
+
+        from mcp_manager import MCPManager
+
+        manager = MCPManager(config_path=config_file)
+
+        with mock.patch("mcp_manager.MCPClient", return_value=mock.MagicMock()):
+            tools = manager.get_mcp_tools_by_names(["nonexistent"])
+
+        assert tools == []
+
+
 class TestStartStop:
     """start() and stop() are lightweight — just logging and no-ops."""
 

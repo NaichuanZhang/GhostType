@@ -24,8 +24,46 @@ The panel never steals focus from the target app. Text insertion works through A
 - **Direct text insertion** -- inserts AI output into the target app via AX APIs (no manual copy-paste)
 - **Multi-provider support** -- Amazon Bedrock, Anthropic, OpenAI, Ollama
 - **Text-to-speech** -- stream-plays AI responses as audio (MiniMax T2A)
+- **Long-term memory** -- agent remembers user preferences and patterns across sessions
 - **MCP tool support** -- extensible via Model Context Protocol servers
 - **Menu bar app** -- lives in the menu bar, no dock icon
+
+## Memory System
+
+The agent has long-term memory that persists across sessions. Rather than replaying full conversation history (which pollutes context), GhostType extracts and retains **distilled learnings** -- user preferences, writing style notes, recurring patterns, and important facts.
+
+### How it works
+
+```
+┌─────────────────┐     ┌───────────────────┐     ┌──────────────────────────┐
+│  Agent Created   │────►│ Load memories.json │────►│ Inject into system prompt │
+└─────────────────┘     └───────────────────┘     └────────────┬─────────────┘
+                                                                │
+                                                    Conversation begins
+                                                                │
+                                              ┌─────────────────┴─────────────────┐
+                                              │                                   │
+                                  Agent notices preference             Normal response
+                                      or pattern                      (no memory action)
+                                              │
+                                  ┌───────────┴───────────┐
+                                  │  Calls save_memory()  │
+                                  └───────────┬───────────┘
+                                              │
+                                  Persisted to disk immediately
+                                              │
+                                  Next session loads it automatically
+```
+
+The agent has three memory tools:
+
+| Tool | Purpose |
+|------|---------|
+| `save_memory` | Store a concise learning (e.g., "User prefers bullet points over paragraphs") |
+| `recall_memories` | List all saved memories with their IDs |
+| `forget_memory` | Remove an outdated or incorrect memory by ID |
+
+Memories are stored at `~/.config/ghosttype/memories.json` (max 50, newest kept). The agent decides autonomously what's worth remembering -- it won't save trivial or one-time information.
 
 ## Architecture
 
@@ -189,10 +227,12 @@ ghosttype/
 ├── backend/                      # Python backend
 │   ├── server.py                 # FastAPI WebSocket server
 │   ├── agent.py                  # Strands Agent factory
+│   ├── agent_registry.py         # YAML-based agent definitions
+│   ├── tool_registry.py          # Named tool resolution
 │   ├── config.py                 # Env var configuration
 │   ├── mcp_manager.py            # MCP server lifecycle
-│   ├── tools/                    # Strands @tool functions (word count, tone, key points)
-│   ├── prompts/                  # System prompts (draft + chat modes)
+│   ├── tools/                    # Strands @tool functions (text, memory)
+│   ├── prompts/                  # System prompts (draft, chat, coding, email)
 │   └── tests/                    # pytest suite
 ├── scripts/
 │   ├── run.sh                    # Build + launch frontend
@@ -224,7 +264,7 @@ swift test
 - **Chrome/Electron caret position** -- these apps don't expose caret bounds via Accessibility APIs. The panel falls back to window-corner positioning instead of exact cursor placement.
 - **Accessibility permission required** -- without it, AX APIs silently return nil. Must be granted manually in System Settings.
 - **Single hotkey** -- Ctrl+K is hardcoded; no UI for remapping.
-- **No persistent memory** -- a fresh agent is created per request. Multi-turn conversation is supported within a session but not persisted across restarts.
+- **Memory is per-device** -- memories are stored locally and not synced across machines.
 
 ## License
 
