@@ -454,7 +454,7 @@ class AppState: ObservableObject {
         NSLog("[GhostType][TokenBatch] Started")
         tokenBuffer = ""
         tokenFlushTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             self?.flushTokenBuffer()
         }
         RunLoop.main.add(timer, forMode: .common)

@@ -590,7 +590,7 @@ struct PromptPanelView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
                     } else {
-                        MarkdownView(text: appState.responseText)
+                        MarkdownView(text: appState.responseText, isStreaming: appState.isGenerating)
                             .padding(12)
                     }
                 }

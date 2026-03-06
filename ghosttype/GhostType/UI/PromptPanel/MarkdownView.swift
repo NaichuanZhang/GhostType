@@ -1,13 +1,86 @@
 import SwiftUI
 import Highlightr
 
+/// Caches parsed markdown blocks incrementally — only re-parses from the point where new text was appended.
+/// Invalidates when the text prefix no longer matches (e.g., new message).
+final class MarkdownBlockCache {
+    private var cachedBlocks: [MarkdownView.Block] = []
+    private var lastParsedText: String = ""
+
+    /// Returns parsed blocks for the given text, reusing cached results when possible.
+    func blocks(for text: String) -> [MarkdownView.Block] {
+        // Fast path: identical text — return cached
+        if text == lastParsedText {
+            return cachedBlocks
+        }
+
+        // Incremental path: text starts with the same prefix
+        if !lastParsedText.isEmpty && text.hasPrefix(lastParsedText) {
+            let newSuffix = String(text[lastParsedText.endIndex...])
+            // Only do incremental if the last cached block might merge with new content.
+            // For safety, re-parse the last block's worth of text plus the new suffix.
+            // Find where the last block started by re-parsing from a safe point.
+            let incrementalBlocks = parseIncrementally(fullText: text, previousText: lastParsedText, suffix: newSuffix)
+            if let incrementalBlocks {
+                cachedBlocks = incrementalBlocks
+                lastParsedText = text
+                return cachedBlocks
+            }
+        }
+
+        // Full re-parse (prefix changed or first parse)
+        cachedBlocks = MarkdownView.parseBlocksStatic(text)
+        lastParsedText = text
+        return cachedBlocks
+    }
+
+    /// Invalidates the cache, forcing a full re-parse on next call.
+    func invalidate() {
+        cachedBlocks = []
+        lastParsedText = ""
+    }
+
+    /// Incremental re-parse: keep all blocks except the last one (which may be incomplete),
+    /// then re-parse from that block's start offset through the end of the new text.
+    private func parseIncrementally(fullText: String, previousText: String, suffix: String) -> [MarkdownView.Block]? {
+        guard cachedBlocks.count > 0 else { return nil }
+
+        // Drop the last block (it might have been a partial paragraph or code block during streaming)
+        let keepCount = max(0, cachedBlocks.count - 1)
+        let kept = Array(cachedBlocks.prefix(keepCount))
+
+        // Find approximate offset where the last kept block ends.
+        // We reconstruct by re-parsing from the kept blocks' text length.
+        let keptTextLength = kept.reduce(0) { $0 + $1.approximateTextLength }
+        // Add newlines between blocks
+        let keptOffset = keptTextLength + max(0, kept.count - 1)
+
+        // Re-parse from the safe offset
+        let safeStart = fullText.index(fullText.startIndex, offsetBy: min(keptOffset, fullText.count))
+        let tailText = String(fullText[safeStart...])
+        let tailBlocks = MarkdownView.parseBlocksStatic(tailText)
+
+        return kept + tailBlocks
+    }
+}
+
 /// Renders markdown text with styled code blocks, headings, lists, and inline formatting.
 /// Designed for streaming — handles partial/incomplete markdown gracefully.
 struct MarkdownView: View {
     let text: String
+    let isStreaming: Bool
+
+    /// Shared cache for incremental block parsing during streaming.
+    /// Using @State so it persists across view re-evaluations for the same MarkdownView identity.
+    @State private var blockCache = MarkdownBlockCache()
+
+    init(text: String, isStreaming: Bool = false) {
+        self.text = text
+        self.isStreaming = isStreaming
+    }
 
     var body: some View {
-        let blocks = parseBlocks(text)
+        let blocks = blockCache.blocks(for: text)
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 renderBlock(block)
@@ -18,12 +91,29 @@ struct MarkdownView: View {
 
     // MARK: - Block Types
 
-    private enum Block {
+    enum Block {
         case codeBlock(language: String, code: String)
         case heading(level: Int, text: String)
         case listItem(bullet: String, text: String)
         case paragraph(text: String)
         case divider
+
+        /// Approximate character count of the block's text content (used for incremental parsing offset).
+        var approximateTextLength: Int {
+            switch self {
+            case .codeBlock(let language, let code):
+                // ``` + language + \n + code + \n + ```
+                return 3 + language.count + 1 + code.count + 1 + 3
+            case .heading(let level, let text):
+                return level + 1 + text.count  // "## " + text
+            case .listItem(_, let text):
+                return 2 + text.count  // "- " + text
+            case .paragraph(let text):
+                return text.count
+            case .divider:
+                return 3  // "---"
+            }
+        }
     }
 
     // MARK: - Rendering
@@ -49,6 +139,14 @@ struct MarkdownView: View {
     private static let highlightr: Highlightr? = Highlightr()
 
     private func highlightCode(_ code: String, language: String) -> AttributedString {
+        // During streaming, skip expensive syntax highlighting — use plain monospace
+        if isStreaming {
+            var plain = AttributedString(code)
+            plain.font = .system(size: 12, design: .monospaced)
+            plain.foregroundColor = .primary
+            return plain
+        }
+
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let theme = isDark ? "atom-one-dark" : "atom-one-light"
 
@@ -135,9 +233,9 @@ struct MarkdownView: View {
         return Text(text)
     }
 
-    // MARK: - Parser
+    // MARK: - Parser (static for cache use)
 
-    private func parseBlocks(_ text: String) -> [Block] {
+    static func parseBlocksStatic(_ text: String) -> [Block] {
         let lines = text.components(separatedBy: "\n")
         var blocks: [Block] = []
         var i = 0
@@ -225,7 +323,7 @@ struct MarkdownView: View {
         return blocks
     }
 
-    private func isHorizontalRule(_ line: String) -> Bool {
+    private static func isHorizontalRule(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
         return t == "---" || t == "***" || t == "___"
     }
