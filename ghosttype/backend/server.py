@@ -381,6 +381,53 @@ async def generate(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "conversation_reset"}))
                 continue
 
+            # ----- Handle restore_history -----
+            if request.get("type") == "restore_history":
+                restore_messages = request.get("messages", [])
+                restore_config = request.get("config")
+                restore_mode_type = request.get("mode_type", "chat")
+                restore_agent_id = request.get("agent")
+
+                model_config = ModelConfig.from_request(restore_config)
+                registry_snapshot = agent_registry.snapshot()
+                agent_id = restore_agent_id or registry_snapshot.default_agent_id
+                agent_def = registry_snapshot.get(agent_id)
+
+                if agent_def is None:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "content": f"Unknown agent: {agent_id}",
+                    }))
+                    continue
+
+                # Create a fresh agent with a dummy handler (will be replaced on next generate)
+                handler = StreamingCallbackHandler(
+                    websocket=websocket, loop=loop, cancel_event=cancel_event,
+                )
+                if agent_def.mcp_servers:
+                    mcp_tools = mcp_manager.get_mcp_tools_by_names(agent_def.mcp_servers)
+                else:
+                    mcp_tools = mcp_manager.get_mcp_tools()
+                agent = create_agent(
+                    callback_handler=handler,
+                    model_config=model_config,
+                    mode_type=restore_mode_type,
+                    mcp_tools=mcp_tools,
+                    agent_def=agent_def,
+                )
+                # Inject conversation history
+                agent.messages = _convert_session_messages_to_strands(restore_messages)
+                current_config = model_config
+                current_mode_type = restore_mode_type
+                current_agent_id = agent_id
+
+                logger.info(
+                    "History restored: %d messages, agent=%s, mode_type=%s",
+                    len(restore_messages), agent_id, restore_mode_type,
+                )
+                await websocket.send_text(json.dumps({"type": "history_restored"}))
+                continue
+
             # ----- Validate prompt -----
             prompt = request.get("prompt", "")
             context = request.get("context", "")
@@ -632,6 +679,21 @@ def _run_agent(agent, message: str, cancel_event: threading.Event):
         raise CancellationError("Generation cancelled before start")
 
     return agent(message)
+
+
+def _convert_session_messages_to_strands(messages: list[dict]) -> list[dict]:
+    """Convert simplified session messages to Strands conversation format.
+
+    Input:  [{"role": "user", "content": "..."}]
+    Output: [{"role": "user", "content": [{"text": "..."}]}]
+
+    Only user and assistant roles are kept; others are filtered out.
+    """
+    return [
+        {"role": msg["role"], "content": [{"text": msg["content"]}]}
+        for msg in messages
+        if msg.get("role") in ("user", "assistant")
+    ]
 
 
 def _friendly_error(e: Exception) -> str:

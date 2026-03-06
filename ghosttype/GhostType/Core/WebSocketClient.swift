@@ -162,6 +162,40 @@ class WebSocketClient: ObservableObject {
         webSocket?.send(.string(jsonString)) { _ in }
     }
 
+    /// Sends a restore_history message to sync a saved session's conversation history to the backend agent.
+    func sendRestoreHistory(messages: [[String: String]], config: [String: String]?,
+                            modeType: String?, agent: String?) {
+        ensureConnected()
+
+        var request: [String: Any] = [
+            "type": "restore_history",
+            "messages": messages,
+        ]
+
+        if let config = config {
+            request["config"] = config
+        }
+        if let modeType = modeType {
+            request["mode_type"] = modeType
+        }
+        if let agent = agent {
+            request["agent"] = agent
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: request),
+              let jsonString = String(data: data, encoding: .utf8) else {
+            NSLog("[GhostType][WS] Failed to serialize restore_history")
+            return
+        }
+
+        NSLog("[GhostType][WS] Sending restore_history: %d messages", messages.count)
+        webSocket?.send(.string(jsonString)) { error in
+            if let error = error {
+                NSLog("[GhostType][WS] restore_history send error: %@", error.localizedDescription)
+            }
+        }
+    }
+
     // MARK: - Cancel
 
     func cancelGeneration() {
@@ -227,6 +261,8 @@ class WebSocketClient: ObservableObject {
                 self?.onCancelled?()
             case "conversation_reset":
                 NSLog("[GhostType][WS] Conversation reset confirmed by server")
+            case "history_restored":
+                NSLog("[GhostType][WS] History restored confirmed by server")
             case "tool_start", "tool_done":
                 let toolName = json["tool_name"] as? String ?? "unknown"
                 let toolId = json["tool_id"] as? String ?? ""

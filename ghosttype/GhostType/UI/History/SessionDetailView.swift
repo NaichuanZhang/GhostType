@@ -5,6 +5,7 @@ struct SessionDetailView: View {
     @EnvironmentObject var appState: AppState
     let session: Session
     let onBack: () -> Void
+    var onContinue: ((Session) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,14 +41,27 @@ struct SessionDetailView: View {
 
             Spacer()
 
-            // Invisible spacer to center the title
-            HStack(spacing: 3) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 10))
-                Text("Back")
-                    .font(.system(size: 10))
+            if let onContinue = onContinue {
+                Button(action: { onContinue(session) }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.forward")
+                            .font(.system(size: 10, weight: .medium))
+                        Text("Continue")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(.purple)
+                }
+                .buttonStyle(.plain)
+            } else {
+                // Invisible spacer to center the title
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10))
+                    Text("Back")
+                        .font(.system(size: 10))
+                }
+                .hidden()
             }
-            .hidden()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

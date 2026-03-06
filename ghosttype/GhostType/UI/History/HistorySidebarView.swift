@@ -4,6 +4,7 @@ import SwiftUI
 /// Slides in from the left edge of the prompt panel.
 struct HistorySidebarView: View {
     @EnvironmentObject var appState: AppState
+    var onContinueSession: (() -> Void)?
     @State private var selectedSessionId: String?
     @State private var showDeleteAllAlert = false
 
@@ -13,7 +14,11 @@ struct HistorySidebarView: View {
                let session = appState.sessionHistory.first(where: { $0.id == sessionId }) {
                 SessionDetailView(
                     session: session,
-                    onBack: { selectedSessionId = nil }
+                    onBack: { selectedSessionId = nil },
+                    onContinue: { session in
+                        appState.restoreSession(session)
+                        onContinueSession?()
+                    }
                 )
             } else {
                 sessionList
@@ -127,6 +132,12 @@ struct HistorySidebarView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Button {
+                appState.restoreSession(session)
+                onContinueSession?()
+            } label: {
+                Label("Continue", systemImage: "arrow.uturn.forward")
+            }
             Button(role: .destructive) {
                 appState.deleteSession(id: session.id)
             } label: {

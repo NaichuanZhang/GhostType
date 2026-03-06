@@ -1241,3 +1241,72 @@ class TestGenerationTimeout:
                     assert "timed out" in error_msg["content"].lower()
             finally:
                 server.GENERATION_TIMEOUT = original_timeout
+
+
+# ---------------------------------------------------------------------------
+# _convert_session_messages_to_strands tests
+# ---------------------------------------------------------------------------
+class TestConvertSessionMessagesToStrands:
+    def test_basic_conversion(self):
+        from server import _convert_session_messages_to_strands
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        result = _convert_session_messages_to_strands(messages)
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == [{"text": "Hello"}]
+        assert result[1]["role"] == "assistant"
+        assert result[1]["content"] == [{"text": "Hi there"}]
+
+    def test_skips_invalid_roles(self):
+        from server import _convert_session_messages_to_strands
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "system", "content": "You are helpful"},
+            {"role": "assistant", "content": "Hi"},
+            {"role": "tool", "content": "result"},
+        ]
+        result = _convert_session_messages_to_strands(messages)
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[1]["role"] == "assistant"
+
+    def test_empty_list(self):
+        from server import _convert_session_messages_to_strands
+
+        result = _convert_session_messages_to_strands([])
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# restore_history WebSocket tests
+# ---------------------------------------------------------------------------
+class TestRestoreHistory:
+    def test_restore_history_responds_with_history_restored(self):
+        """Send restore_history message, verify history_restored response."""
+        from starlette.testclient import TestClient
+        from server import app
+
+        with TestClient(app) as client:
+            with client.websocket_connect("/generate") as ws:
+                restore_msg = {
+                    "type": "restore_history",
+                    "messages": [
+                        {"role": "user", "content": "What is Python?"},
+                        {"role": "assistant", "content": "A programming language."},
+                    ],
+                    "config": {"provider": "bedrock", "model_id": "test-model"},
+                    "mode_type": "chat",
+                    "agent": "general",
+                }
+                ws.send_text(json.dumps(restore_msg))
+                raw = ws.receive_text()
+                msg = json.loads(raw)
+
+                assert msg["type"] == "history_restored"

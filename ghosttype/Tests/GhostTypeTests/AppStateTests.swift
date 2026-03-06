@@ -457,6 +457,158 @@ private func cleanup(_ url: URL) {
     #expect(sessions[0].title == "Before clear")
 }
 
+// MARK: - restoreSession
+
+@Test func restoreSessionPopulatesConversationMessages() {
+    let state = makeAppState()
+    let session = Session(
+        id: "s1",
+        title: "Test",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "chat",
+        agentId: "general",
+        modelId: "test-model",
+        messages: [
+            SessionMessage(id: "m1", role: "user", content: "Hello", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m2", role: "assistant", content: "Hi there", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m3", role: "user", content: "How are you?", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m4", role: "assistant", content: "I'm fine!", timestamp: Date(), context: nil, screenshotFilename: nil),
+        ]
+    )
+
+    state.restoreSession(session)
+
+    // All messages except last assistant go into conversationMessages
+    #expect(state.conversationMessages.count == 3)
+    #expect(state.conversationMessages[0].role == "user")
+    #expect(state.conversationMessages[0].content == "Hello")
+    #expect(state.conversationMessages[1].role == "assistant")
+    #expect(state.conversationMessages[1].content == "Hi there")
+    #expect(state.conversationMessages[2].role == "user")
+    #expect(state.conversationMessages[2].content == "How are you?")
+    // Last assistant response goes into responseText
+    #expect(state.responseText == "I'm fine!")
+}
+
+@Test func restoreSessionSetsConversationMode() {
+    let state = makeAppState()
+    let session = Session(
+        id: "s1",
+        title: "Test",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "chat",
+        agentId: nil,
+        modelId: "m",
+        messages: [
+            SessionMessage(id: "m1", role: "user", content: "q", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m2", role: "assistant", content: "a", timestamp: Date(), context: nil, screenshotFilename: nil),
+        ]
+    )
+
+    state.restoreSession(session)
+
+    #expect(state.conversationMode == .chat)
+}
+
+@Test func restoreSessionSetsDraftMode() {
+    let state = makeAppState()
+    let session = Session(
+        id: "s1",
+        title: "Test",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "draft",
+        agentId: nil,
+        modelId: "m",
+        messages: [
+            SessionMessage(id: "m1", role: "user", content: "q", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m2", role: "assistant", content: "a", timestamp: Date(), context: nil, screenshotFilename: nil),
+        ]
+    )
+
+    state.restoreSession(session)
+
+    #expect(state.conversationMode == .draft)
+}
+
+@Test func restoreSessionSetsAgentId() {
+    let state = makeAppState()
+    let session = Session(
+        id: "s1",
+        title: "Test",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "chat",
+        agentId: "coding",
+        modelId: "m",
+        messages: [
+            SessionMessage(id: "m1", role: "user", content: "q", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m2", role: "assistant", content: "a", timestamp: Date(), context: nil, screenshotFilename: nil),
+        ]
+    )
+
+    state.restoreSession(session)
+
+    #expect(state.selectedAgentId == "coding")
+}
+
+@Test func restoreSessionEmptySessionIsNoOp() {
+    let state = makeAppState()
+    state.conversationMode = .draft
+    state.promptText = "existing"
+
+    let emptySession = Session(
+        id: "s1",
+        title: "Empty",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "chat",
+        agentId: nil,
+        modelId: "m",
+        messages: []
+    )
+
+    state.restoreSession(emptySession)
+
+    // Nothing should change
+    #expect(state.conversationMode == .draft)
+    #expect(state.promptText == "existing")
+    #expect(state.conversationMessages.isEmpty)
+}
+
+@Test func restoreSessionSavesCurrentConversationFirst() throws {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    // Set up an existing conversation
+    state.appendMessage(role: "user", content: "Old question")
+    state.appendMessage(role: "assistant", content: "Old answer")
+
+    let session = Session(
+        id: "s1",
+        title: "New",
+        createdAt: Date(),
+        updatedAt: Date(),
+        mode: "chat",
+        agentId: nil,
+        modelId: "m",
+        messages: [
+            SessionMessage(id: "m1", role: "user", content: "q", timestamp: Date(), context: nil, screenshotFilename: nil),
+            SessionMessage(id: "m2", role: "assistant", content: "a", timestamp: Date(), context: nil, screenshotFilename: nil),
+        ]
+    )
+
+    state.restoreSession(session)
+
+    // The old conversation should have been saved
+    let sessions = state.sessionStore.loadSessions()
+    #expect(sessions.count >= 1)
+    let saved = sessions.first(where: { $0.title == "Old question" })
+    #expect(saved != nil)
+}
+
 @Test func deleteSessionRemovesAndRefreshes() throws {
     let (state, base) = makeAppStateWithTempStore()
     defer { cleanup(base) }

@@ -23,7 +23,12 @@ struct PromptPanelView: View {
         HStack(spacing: 0) {
             // History sidebar (expands panel when visible)
             if showHistorySidebar {
-                HistorySidebarView()
+                HistorySidebarView(onContinueSession: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showHistorySidebar = false
+                    }
+                    isPromptFocused = true
+                })
                     .frame(width: 260)
                     .transition(.move(edge: .leading))
                 Divider()

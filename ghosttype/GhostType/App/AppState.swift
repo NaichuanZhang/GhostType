@@ -429,6 +429,50 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Loads a saved session into the active chat for continuation.
+    /// Saves any existing conversation first, then populates the UI
+    /// with the session's messages and syncs history to the backend.
+    func restoreSession(_ session: Session) {
+        guard !session.messages.isEmpty else { return }
+
+        // Save current conversation before replacing
+        clearConversation()
+
+        // Set mode from session
+        conversationMode = session.mode == "chat" ? .chat : .draft
+
+        // Set agent from session
+        selectedAgentId = session.agentId
+
+        // Convert session messages to conversation messages.
+        // All messages except the last assistant go into conversationMessages.
+        // The last assistant message goes into responseText so the UI renders it
+        // as the current (most recent) response.
+        let allMessages = session.messages
+        let lastAssistantIndex = allMessages.lastIndex(where: { $0.role == "assistant" })
+
+        for (index, msg) in allMessages.enumerated() {
+            if index == lastAssistantIndex {
+                responseText = msg.content
+            } else {
+                conversationMessages.append(
+                    ConversationMessage(role: msg.role, content: msg.content)
+                )
+            }
+        }
+
+        // Sync history to backend agent
+        let simplifiedMessages = allMessages.map { ["role": $0.role, "content": $0.content] }
+        wsClient.sendRestoreHistory(
+            messages: simplifiedMessages,
+            config: modelConfigForRequest(),
+            modeType: session.mode == "chat" ? "chat" : "draft",
+            agent: session.agentId
+        )
+
+        NSLog("[GhostType][AppState] Restored session %@ (%d messages)", session.id, session.messages.count)
+    }
+
     /// Populates sessionHistory from disk.
     func loadSessionHistory() {
         sessionHistory = sessionStore.loadSessions()
