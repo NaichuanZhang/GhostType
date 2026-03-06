@@ -7,6 +7,8 @@ struct PromptPanelView: View {
     @EnvironmentObject var appState: AppState
     @FocusState private var isPromptFocused: Bool
     @State private var showHistorySidebar = false
+    @State private var showMentionPopup = false
+    @State private var tabMonitor: Any?
 
     /// Whether the conversation has had at least one completed turn.
     private var hasConversationHistory: Bool {
@@ -19,9 +21,10 @@ struct PromptPanelView: View {
                       appState.responseText.count,
                       appState.conversationMessages.count)
         HStack(spacing: 0) {
-            // History sidebar (slides in from left)
+            // History sidebar (expands panel when visible)
             if showHistorySidebar {
                 HistorySidebarView()
+                    .frame(width: 260)
                     .transition(.move(edge: .leading))
                 Divider()
             }
@@ -31,16 +34,34 @@ struct PromptPanelView: View {
                 headerBar
                 Divider()
 
-                VStack(spacing: 12) {
-                    // Conversation history (visible after first completed turn)
-                    if hasConversationHistory {
-                        conversationHistory
+                // Scrollable content area — fills available space
+                ScrollView {
+                    VStack(spacing: 12) {
+                        // Conversation history (visible after first completed turn)
+                        if hasConversationHistory {
+                            conversationHistory
+                        }
+
+                        // Response area
+                        if appState.isGenerating || !appState.responseText.isEmpty {
+                            responseArea
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+                .frame(maxHeight: .infinity)
 
-                    promptInput
+                Divider()
 
+                // Pinned bottom input area
+                VStack(spacing: 8) {
                     if !appState.selectedContext.isEmpty && appState.conversationMessages.isEmpty {
                         contextIndicator
+                    }
+
+                    if appState.isBrowserContextAttached {
+                        browserContextIndicator
                     }
 
                     // Screenshot preview (visible before first generation)
@@ -48,19 +69,16 @@ struct PromptPanelView: View {
                         screenshotIndicator
                     }
 
-                    // Quick actions (only before any generation, first turn only)
-                    if appState.responseText.isEmpty && !appState.isGenerating && !hasConversationHistory {
-                        quickActions
-                    }
-
                     // Error display
                     if let error = appState.errorMessage {
                         errorBanner(error)
                     }
 
-                    // Response area
-                    if appState.isGenerating || !appState.responseText.isEmpty {
-                        responseArea
+                    promptInput
+
+                    // Quick actions (only before any generation, first turn only)
+                    if appState.responseText.isEmpty && !appState.isGenerating && !hasConversationHistory {
+                        quickActions
                     }
 
                     // Action bar (when response is ready)
@@ -70,13 +88,27 @@ struct PromptPanelView: View {
                 }
                 .padding(16)
             }
-            .frame(width: appState.panelWidth)
+            .frame(minWidth: appState.panelWidth, maxWidth: .infinity)
         }
-        .frame(minHeight: 120, maxHeight: 900)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.clear)
         .animation(.easeInOut(duration: 0.2), value: showHistorySidebar)
         .onAppear {
             isPromptFocused = true
+            tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Tab key (keyCode 48) accepts @mention suggestion when popup is visible
+                if event.keyCode == 48, self.showMentionPopup {
+                    self.acceptMentionSuggestion()
+                    return nil  // consume the event
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = tabMonitor {
+                NSEvent.removeMonitor(monitor)
+                tabMonitor = nil
+            }
         }
         .onChange(of: appState.isPromptVisible) { visible in
             if visible {
@@ -186,28 +218,15 @@ struct PromptPanelView: View {
     // MARK: - Conversation History
 
     private var conversationHistory: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(appState.conversationMessages) { message in
-                        conversationBubble(message)
-                            .id(message.id)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .frame(maxHeight: 300)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(.quaternary.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onChange(of: appState.conversationMessages.count) { _ in
-                if let last = appState.conversationMessages.last {
-                    // No animation — animated scrollTo during rapid view updates
-                    // (token streaming) deadlocks SwiftUI's layout engine.
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+        LazyVStack(spacing: 8) {
+            ForEach(appState.conversationMessages) { message in
+                conversationBubble(message)
+                    .id(message.id)
             }
         }
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func conversationBubble(_ message: ConversationMessage) -> some View {
@@ -273,6 +292,15 @@ struct PromptPanelView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 0)
             }
+        }
+        .overlay(alignment: .topLeading) {
+            if showMentionPopup {
+                mentionPopup
+                    .offset(y: -36)
+            }
+        }
+        .onChange(of: appState.promptText) { newValue in
+            showMentionPopup = newValue.hasSuffix("@")
         }
     }
 
@@ -358,6 +386,67 @@ struct PromptPanelView: View {
         .foregroundStyle(.secondary)
         .padding(8)
         .background(.quaternary.opacity(0.3))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - @Mention Popup
+
+    /// Accept the @browser mention: strip trailing `@`, dismiss popup, fetch context.
+    private func acceptMentionSuggestion() {
+        if appState.promptText.hasSuffix("@") {
+            appState.promptText = String(appState.promptText.dropLast())
+        }
+        showMentionPopup = false
+        appState.fetchBrowserContext()
+    }
+
+    private var mentionPopup: some View {
+        Button(action: {
+            acceptMentionSuggestion()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.blue)
+                Text("@browser")
+                    .font(.system(size: 12, weight: .medium))
+                Text("— active Chrome tab")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThickMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Browser Context Indicator
+
+    private var browserContextIndicator: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "globe")
+                .font(.system(size: 10))
+                .foregroundStyle(.blue)
+            let title = appState.browserContext?.title ?? "Browser page"
+            let truncatedTitle = title.count > 40 ? String(title.prefix(40)) + "..." : title
+            Text(truncatedTitle)
+                .font(.system(size: 11))
+                .lineLimit(1)
+            Spacer()
+            Button(action: {
+                appState.clearBrowserContext()
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(.secondary)
+        .padding(8)
+        .background(Color.blue.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
@@ -492,23 +581,19 @@ struct PromptPanelView: View {
                 AvatarView(size: 28, isAnimating: appState.isGenerating)
                     .padding(.top, 8)
 
-                ScrollView {
-                    Group {
-                        if appState.responseViewTab == .original && !appState.selectedContext.isEmpty && !hasConversationHistory {
-                            Text(appState.selectedContext)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                        } else {
-                            MarkdownView(text: appState.responseText)
-                                .padding(12)
-                        }
+                Group {
+                    if appState.responseViewTab == .original && !appState.selectedContext.isEmpty && !hasConversationHistory {
+                        Text(appState.selectedContext)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    } else {
+                        MarkdownView(text: appState.responseText)
+                            .padding(12)
                     }
                 }
-                .frame(maxHeight: 600)
-                .fixedSize(horizontal: false, vertical: true)
                 .background(.quaternary.opacity(0.2))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(alignment: .bottomTrailing) {
@@ -703,8 +788,10 @@ struct PromptPanelView: View {
 
         // Route generation through selected backend
         if appState.backendStatus == .running {
-            NSLog("[GhostType][Submit] Using local backend: mode=%@, mode_type=%@, screenshot=%@, agent=%@", mode, modeTypeStr, screenshot != nil ? "YES" : "NO", agentId ?? "default")
-            generateWithBackend(prompt: effectivePrompt, context: appState.selectedContext, mode: mode, modeType: modeTypeStr, screenshot: screenshot, agent: agentId)
+            NSLog("[GhostType][Submit] Using local backend: mode=%@, mode_type=%@, screenshot=%@, agent=%@, browserCtx=%@",
+                  mode, modeTypeStr, screenshot != nil ? "YES" : "NO", agentId ?? "default",
+                  appState.isBrowserContextAttached ? "YES" : "NO")
+            generateWithBackend(prompt: effectivePrompt, context: appState.selectedContext, mode: mode, modeType: modeTypeStr, screenshot: screenshot, agent: agentId, includeBrowserContext: appState.isBrowserContextAttached)
         } else {
             NSLog("[GhostType][Submit] Backend unavailable, using StubAgent")
             generateWithStub(prompt: effectivePrompt, context: appState.selectedContext)
@@ -764,7 +851,7 @@ struct PromptPanelView: View {
 
     // MARK: - Backend Generation
 
-    private func generateWithBackend(prompt: String, context: String, mode: String, modeType: String, screenshot: String? = nil, agent: String? = nil) {
+    private func generateWithBackend(prompt: String, context: String, mode: String, modeType: String, screenshot: String? = nil, agent: String? = nil, includeBrowserContext: Bool = false) {
         let wsClient = appState.wsClient
 
         NSLog("[GhostType][Generate] generateWithBackend — mode=%@, modeType=%@, promptLen=%d, contextLen=%d, hasScreenshot=%@, wsConnected=%@, backendStatus=%@",
@@ -818,7 +905,7 @@ struct PromptPanelView: View {
         }
 
         let config = appState.modelConfigForRequest()
-        wsClient.generate(prompt: prompt, context: context, mode: mode, modeType: modeType, config: config, screenshot: screenshot, agent: agent)
+        wsClient.generate(prompt: prompt, context: context, mode: mode, modeType: modeType, config: config, screenshot: screenshot, agent: agent, includeBrowserContext: includeBrowserContext)
     }
 
     // MARK: - Stub Fallback

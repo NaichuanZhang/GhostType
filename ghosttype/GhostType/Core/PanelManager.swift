@@ -15,7 +15,6 @@ class PanelManager {
     private let appState: AppState
     private var dismissObserver: NSObjectProtocol?
     private var escapeMonitor: Any?
-    private var stateChangeObserver: AnyCancellable?
     private var previousApp: NSRunningApplication?
 
     // Avatar panel views
@@ -37,28 +36,6 @@ class PanelManager {
             self?.hide()
         }
 
-        // Reactively resize the panel when AppState properties change.
-        //
-        // The 200ms debounce ensures we only fire after all @Published
-        // mutations have settled (e.g. completeTurn() changes messages,
-        // promptText, responseText in rapid succession).
-        //
-        // The !isGenerating guard is critical: during token streaming,
-        // reading intrinsicContentSize triggers SwiftUI layout, and if
-        // SwiftUI is mid-update from a token flush, the non-reentrant
-        // layout engine deadlocks.  By gating on !isGenerating we
-        // guarantee zero intrinsicContentSize reads / setFrame() calls
-        // during streaming.  The panel stays at its current size while
-        // tokens stream, and snaps to the correct height once generation
-        // (and the debounce window) completes.
-        stateChangeObserver = appState.objectWillChange
-            .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self = self,
-                      self.panel?.isVisible == true,
-                      !self.appState.isGenerating else { return }
-                self.resizePanelToFit()
-            }
     }
 
     deinit {
@@ -68,7 +45,6 @@ class PanelManager {
         if let monitor = escapeMonitor {
             NSEvent.removeMonitor(monitor)
         }
-        stateChangeObserver?.cancel()
         avatarObserver?.cancel()
     }
 
@@ -144,16 +120,6 @@ class PanelManager {
             self.appState.selectedTextRange = cursorInfo?.selectedRange
             self.appState.isPromptVisible = true
 
-            // Calculate panel width as 70% of the active app's window width
-            let activeWindowFrame = cursorInfo?.windowFrame
-                ?? AccessibilityEngine.getFocusedWindowFrame(for: effectiveApp?.processIdentifier)
-            if let windowWidth = activeWindowFrame?.width, windowWidth > 0 {
-                let desired = windowWidth * 0.7
-                // Clamp between 380 (minimum usable) and 900 (maximum reasonable)
-                self.appState.panelWidth = min(max(desired, 380), 900)
-                NSLog("[GhostType] Panel width: %.0f (70%% of window %.0f)", self.appState.panelWidth, windowWidth)
-            }
-
             // Reset backend agent history for fresh conversation
             self.appState.wsClient.sendNewConversation()
 
@@ -192,11 +158,6 @@ class PanelManager {
             panel.makeKeyAndOrderFront(nil)
 
             self.startEscapeMonitor()
-
-            // Initial resize after SwiftUI has laid out the view tree.
-            DispatchQueue.main.async { [weak self] in
-                self?.resizePanelToFit()
-            }
 
             // Drive focus into the actual NSTextField inside the SwiftUI hierarchy.
             // Uses retry because SwiftUI lazily creates AppKit views.
@@ -256,58 +217,17 @@ class PanelManager {
         }
     }
 
-    // MARK: - Panel Resize
+    // MARK: - Static Panel Sizing
+
+    private static let promptWidth: CGFloat = 480
+    private static let panelHeight: CGFloat = 640
 
     /// Total panel width including avatar panel (if visible) and gap.
-    private func totalPanelWidth() -> CGFloat {
+    private func panelWidth() -> CGFloat {
         if appState.showAvatarPanel {
-            return appState.avatarPanelWidth + 6 + appState.panelWidth
+            return appState.avatarPanelWidth + 6 + Self.promptWidth
         }
-        return appState.panelWidth
-    }
-
-    /// Reads the SwiftUI hosting view's intrinsic content size and sets the
-    /// panel frame to match.  Must NEVER be called while `isGenerating` is
-    /// true — reading `intrinsicContentSize` triggers SwiftUI layout, which
-    /// deadlocks if SwiftUI is mid-update from a token flush.
-    private func resizePanelToFit() {
-        guard let panel = panel, panel.isVisible,
-              let hostingView = self.hostingView else { return }
-
-        let idealHeight = hostingView.intrinsicContentSize.height
-        guard idealHeight > 0 else { return }
-
-        let screen = panel.screen ?? NSScreen.main
-        let maxHeight = min((screen?.visibleFrame.height ?? 800) - 40, 900)
-        let newHeight = min(max(idealHeight, 120), maxHeight)
-        let newWidth = totalPanelWidth()
-        let currentFrame = panel.frame
-
-        let heightChanged = abs(currentFrame.height - newHeight) > 2
-        let widthChanged = abs(currentFrame.width - newWidth) > 2
-
-        // Only resize if something changed meaningfully
-        guard heightChanged || widthChanged else { return }
-
-        NSLog("[GhostType][Resize] Panel: %.0fx%.0f → %.0fx%.0f",
-              currentFrame.width, currentFrame.height, newWidth, newHeight)
-
-        // Keep top edge fixed — grow/shrink downward
-        var newY = currentFrame.maxY - newHeight
-
-        // Clamp to screen visible area
-        if let vis = screen?.visibleFrame {
-            if newY < vis.minY {
-                newY = vis.minY
-            }
-            if newY + newHeight > vis.maxY {
-                newY = vis.maxY - newHeight
-            }
-        }
-
-        panel.setFrame(NSRect(x: currentFrame.origin.x, y: newY,
-                              width: newWidth, height: newHeight),
-                       display: true, animate: false)
+        return Self.promptWidth
     }
 
     /// Returns an HTML wrapper that scales the given URL's iframe to fit the container.
@@ -361,15 +281,25 @@ class PanelManager {
         avatarContainer?.isHidden = !show
         avatarWidthConstraint?.constant = show ? appState.avatarPanelWidth : 0
         avatarGapConstraint?.constant = show ? 6 : 0
-        resizePanelToFit()
+
+        // Adjust panel width for avatar toggle — keep same position and height
+        if let panel = panel, panel.isVisible {
+            let currentFrame = panel.frame
+            let newWidth = panelWidth()
+            if abs(currentFrame.width - newWidth) > 2 {
+                panel.setFrame(NSRect(x: currentFrame.origin.x, y: currentFrame.origin.y,
+                                      width: newWidth, height: currentFrame.height),
+                               display: true, animate: false)
+            }
+        }
     }
 
     // MARK: - Panel Creation
 
     private func getOrCreatePanel() -> FloatingPanel {
         if let existing = panel {
-            // Resize existing panel to match new dynamic width
-            let desiredWidth = totalPanelWidth()
+            // Ensure panel width matches (avatar toggle), preserve user's height
+            let desiredWidth = panelWidth()
             let currentFrame = existing.frame
             if abs(currentFrame.width - desiredWidth) > 2 {
                 existing.setFrame(NSRect(x: currentFrame.origin.x, y: currentFrame.origin.y,
@@ -386,12 +316,12 @@ class PanelManager {
             return existing
         }
 
-        let fullWidth = totalPanelWidth()
-        let panelHeight: CGFloat = 320
+        let fullWidth = panelWidth()
+        let panelHeight: CGFloat = Self.panelHeight
 
         let panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: fullWidth, height: panelHeight),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .titled, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )

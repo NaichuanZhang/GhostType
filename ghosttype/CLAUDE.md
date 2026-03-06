@@ -65,6 +65,8 @@ Ctrl+K → HotkeyManager → PanelManager.show() → AccessibilityEngine.getCurs
 
 **Memory** (`tools/memory_tools.py`): Persistent JSON file at `~/.config/ghosttype/memories.json`. Memories are injected into system prompt via `build_memory_context()`. Memory tools (`save_memory`, `recall_memories`, `forget_memory`) are always available regardless of agent definition.
 
+**Browser context** (`browser_context.py`): `BrowserContext` (frozen dataclass) + thread-safe `BrowserContextStore`. The Chrome extension POSTs page content to `POST /browser-context`; the frontend reads it via `GET /browser-context`. During generation, if the client sends `"include_browser_context": true`, the server injects the stored page content (truncated to 10K chars) into the agent prompt via `build_message()`.
+
 **MCP** (`mcp_manager.py`): Loads server definitions from `mcp_config.json`. Creates fresh `MCPClient` instances per agent — the Strands Agent manages subprocess lifecycle internally. Agents can specify which MCP servers they need via `mcp_servers` in their definition.
 
 ### Frontend (`GhostType/`)
@@ -74,20 +76,25 @@ SPM package split into `GhostTypeLib` (library) and `GhostType` (executable in `
 **Core components** (`Core/`):
 - `HotkeyManager` — global Ctrl+K via `CGEventTap` (intercepts and consumes)
 - `AccessibilityEngine` — AX API: cursor position, selected text, text insertion
-- `FloatingPanel` — `NSPanel` subclass, must stay non-activating (`.nonactivatingPanel`)
-- `PanelManager` — positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left)
+- `FloatingPanel` — `NSPanel` subclass, non-activating (`.nonactivatingPanel`), resizable, no title bar buttons. Default 480x640, min 380x300, max 1200x900.
+- `PanelManager` — creates/positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left), no dynamic resize logic
 - `WebSocketClient` — `URLSessionWebSocketTask`, health poll every 10s, auto-reconnect
 - `AgentService` — fetches agent definitions from `GET /agents`
 - `SessionStore` — persists conversations as JSON at `~/.config/ghosttype/sessions/`
+- `BrowserContextService` — fetches browser context from `GET /browser-context`
 - `AppState` — single `ObservableObject`, shared via `@EnvironmentObject`
 
 **Models** (`Models/`):
 - `AgentInfo` — agent definition from backend, includes `agentForBundle()` for auto-selection
 - `Session`/`SessionMessage` — conversation persistence model
 
+### Chrome Extension (`chrome-extension/`)
+
+Manifest V3 extension that captures active tab content and POSTs it to the backend's `/browser-context` endpoint. `content.js` extracts page text on navigation; `background.js` relays it to the backend. The popup (`popup.html`/`popup.js`) shows connection status. Load as an unpacked extension in `chrome://extensions`.
+
 ### Communication Protocol
 
-WebSocket: `ws://127.0.0.1:8420/generate`. Health: `GET /health`. Agents: `GET /agents`.
+WebSocket: `ws://127.0.0.1:8420/generate`. Health: `GET /health`. Agents: `GET /agents`. Browser context: `POST /browser-context`, `GET /browser-context`.
 
 Client → Server:
 ```json
@@ -111,7 +118,8 @@ Server → Client:
 
 ## Important Patterns
 
-- **Non-activating panel**: The `NSPanel` must remain non-activating — stealing focus from the target app breaks AX text insertion. Never change the `.nonactivatingPanel` style mask.
+- **Non-activating panel**: The `NSPanel` must remain non-activating — stealing focus from the target app breaks AX text insertion. Never change the `.nonactivatingPanel` style mask. Title bar buttons are hidden; the panel is dismissed via Escape.
+- **Static panel sizing**: The panel is a fixed 480x640 GPT-style chat window (user-resizable). `AppState.panelWidth` is a `let` constant — no dynamic resize based on content. Content scrolls within the panel instead of the panel growing. This eliminates the `intrinsicContentSize` deadlock that occurred when `resizePanelToFit()` triggered SwiftUI layout during token streaming.
 - **Text insertion dual strategy**: AX API direct set preferred, simulated Cmd+V paste as fallback. Web apps (Chrome/Electron) skip AX retries and paste directly.
 - **Coordinate conversion**: AX API uses top-left origin, NSWindow uses bottom-left. Formula: `cocoaY = primaryScreen.frame.height - cgY`.
 - **Thread bridging**: `StreamingCallbackHandler` runs in a worker thread, schedules async sends via `asyncio.run_coroutine_threadsafe`. Cancellation is checked on every callback.

@@ -20,5 +20,10 @@ class FloatingPanel: NSPanel {
     ) {
         super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
         self.becomesKeyOnlyIfNeeded = false
+        self.minSize = NSSize(width: 380, height: 300)
+        self.maxSize = NSSize(width: 1200, height: 900)
+        standardWindowButton(.closeButton)?.isHidden = true
+        standardWindowButton(.miniaturizeButton)?.isHidden = true
+        standardWindowButton(.zoomButton)?.isHidden = true
     }
 }
