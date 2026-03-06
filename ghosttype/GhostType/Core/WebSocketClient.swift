@@ -101,7 +101,8 @@ class WebSocketClient: ObservableObject {
 
     func generate(prompt: String, context: String = "", mode: String = "generate",
                    modeType: String? = nil, config: [String: String]? = nil,
-                   screenshot: String? = nil, agent: String? = nil) {
+                   screenshot: String? = nil, agent: String? = nil,
+                   includeBrowserContext: Bool = false) {
         ensureConnected()
 
         var request: [String: Any] = [
@@ -124,6 +125,10 @@ class WebSocketClient: ObservableObject {
 
         if let agent = agent {
             request["agent"] = agent
+        }
+
+        if includeBrowserContext {
+            request["include_browser_context"] = true
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: request),

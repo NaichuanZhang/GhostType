@@ -12,9 +12,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from agent import ModelConfig, create_agent
 from agent_registry import AgentRegistry
+from browser_context import BrowserContext, BrowserContextStore
 from config import config
 from mcp_manager import MCPManager
 
@@ -33,6 +35,7 @@ logger = logging.getLogger("ghosttype.server")
 # ---------------------------------------------------------------------------
 mcp_manager = MCPManager()
 agent_registry = AgentRegistry()
+browser_context_store = BrowserContextStore()
 
 
 @asynccontextmanager
@@ -80,6 +83,45 @@ async def agents():
         "agents": snapshot.to_dicts(),
         "default_agent_id": snapshot.default_agent_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Browser context endpoints
+# ---------------------------------------------------------------------------
+class BrowserContextRequest(BaseModel):
+    url: str
+    title: str = ""
+    content: str = ""
+    selected_text: str = ""
+
+
+@app.post("/browser-context")
+async def post_browser_context(req: BrowserContextRequest):
+    """Receive page content from the Chrome extension."""
+    if not req.url:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    ctx = BrowserContext(
+        url=req.url,
+        title=req.title,
+        content=req.content,
+        selected_text=req.selected_text,
+        timestamp=time.time(),
+    )
+    browser_context_store.set(ctx)
+    logger.info("Browser context updated: url=%s, content_len=%d", req.url, len(req.content))
+    logger.debug("Browser context detail: title=%r, selected_text_len=%d, content_preview=%r",
+                 req.title, len(req.selected_text), req.content[:200])
+    return {"status": "ok"}
+
+
+@app.get("/browser-context")
+async def get_browser_context():
+    """Return the current browser context (if any)."""
+    ctx = browser_context_store.get()
+    logger.debug("Browser context GET: available=%s, url=%s", ctx is not None, ctx.url if ctx else None)
+    return browser_context_store.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -228,21 +270,26 @@ def classify_mode_type(mode: str, context: str, prompt: str) -> str:
     return "chat"
 
 
-def build_message(prompt: str, context: str, mode: str) -> str:
+def build_message(prompt: str, context: str, mode: str, browser_context: str = "") -> str:
     """Build the user text message based on mode and context."""
     if mode == "rewrite" and context:
-        return f"Rewrite the following text:\n\n{context}\n\nInstructions: {prompt}"
+        base = f"Rewrite the following text:\n\n{context}\n\nInstructions: {prompt}"
     elif mode == "fix" and context:
-        return f"Fix grammar and spelling in the following text:\n\n{context}"
+        base = f"Fix grammar and spelling in the following text:\n\n{context}"
     elif mode == "translate" and context:
-        return f"Translate the following text. {prompt}\n\n{context}"
+        base = f"Translate the following text. {prompt}\n\n{context}"
     elif context:
-        return (
+        base = (
             f'Context (selected text from user\'s application):\n"""\n{context}\n"""\n\n'
             f"Task: {prompt}"
         )
     else:
-        return prompt
+        base = prompt
+
+    if browser_context:
+        base += f'\n\nBrowser page content:\n"""\n{browser_context}\n"""'
+
+    return base
 
 
 def build_multimodal_message(text: str, screenshot_b64: str | None) -> str | list:
@@ -357,7 +404,22 @@ async def generate(websocket: WebSocket):
             # Determine mode type — use client-provided value or auto-classify
             mode_type = request.get("mode_type") or classify_mode_type(mode, context, prompt)
 
-            text_message = build_message(prompt, context, mode)
+            # Optionally attach browser page content
+            browser_ctx_text = ""
+            if request.get("include_browser_context"):
+                bc = browser_context_store.get()
+                if bc is not None:
+                    # Truncate to 10,000 chars to stay within reasonable context limits
+                    browser_ctx_text = bc.content[:10_000]
+                    if bc.selected_text:
+                        browser_ctx_text += f"\n\nUser's selection on the page:\n{bc.selected_text[:2_000]}"
+
+            if browser_ctx_text:
+                logger.debug("Browser context injected: len=%d, preview=%r", len(browser_ctx_text), browser_ctx_text[:200])
+            elif request.get("include_browser_context"):
+                logger.debug("Browser context requested but none available")
+
+            text_message = build_message(prompt, context, mode, browser_context=browser_ctx_text)
             user_message = build_multimodal_message(text_message, screenshot_b64)
             has_screenshot = screenshot_b64 is not None
             logger.info(

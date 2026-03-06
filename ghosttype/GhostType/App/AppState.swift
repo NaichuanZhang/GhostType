@@ -150,13 +150,17 @@ class AppState: ObservableObject {
     var sessionStore = SessionStore()
     @Published var sessionHistory: [Session] = []
 
+    // MARK: - Browser Context (@browser mention)
+    @Published var browserContext: BrowserContextService.BrowserContextData?
+    @Published var isBrowserContextAttached: Bool = false
+
     // MARK: - Agent Selection
     @Published var availableAgents: [AgentInfo] = []
     @Published var selectedAgentId: String?
     var defaultAgentId: String?
 
-    /// Dynamic panel width — set to 70% of the active app's window width when the panel opens.
-    @Published var panelWidth: CGFloat = 420
+    /// Fixed panel width for the GPT-style chat layout.
+    let panelWidth: CGFloat = 480
 
     /// The AXUIElement that was focused when the panel opened (not @Published — no UI binding needed).
     var targetElement: AXUIElement?
@@ -278,6 +282,20 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(ttsSpeed, forKey: "ttsSpeed")
     }
 
+    /// Fetches browser context from the backend and attaches it.
+    func fetchBrowserContext() {
+        BrowserContextService.fetchBrowserContext { [weak self] data in
+            self?.browserContext = data
+            self?.isBrowserContextAttached = data != nil
+        }
+    }
+
+    /// Clears attached browser context.
+    func clearBrowserContext() {
+        browserContext = nil
+        isBrowserContextAttached = false
+    }
+
     func clearResponse() {
         ttsClient.stop()
         promptText = ""
@@ -290,6 +308,7 @@ class AppState: ObservableObject {
         screenshotImage = nil
         activeToolCalls = []
         isToolCallsExpanded = false
+        clearBrowserContext()
     }
 
     /// Clears current response but keeps conversation history (for multi-turn).
