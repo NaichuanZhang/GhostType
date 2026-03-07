@@ -3,16 +3,24 @@
   "name": "GhostType Browser Context",
   "version": "1.0.0",
   "description": "Captures page content for GhostType's @browser context",
-  "permissions": ["scripting", "tabs", "webNavigation"],
+  "permissions": ["scripting", "tabs", "webNavigation", "alarms"],
   "host_permissions": ["http://127.0.0.1:8420/*", "<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["content.js"],
-    "run_at": "document_idle"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["xhr-interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

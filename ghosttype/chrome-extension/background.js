@@ -2,16 +2,93 @@
  * GhostType background service worker — coordinates content extraction
  * and pushes page context to the backend.
  *
- * Auto-captures on tab switch and page load so @browser context is always fresh.
+ * Auto-captures on tab switch, page load, SPA navigation, and periodic
+ * alarm so @browser context is always fresh even when the MV3 service
+ * worker is killed and restarted.
  */
 
 const BACKEND_URL = "http://127.0.0.1:8420/browser-context";
+
+// Retry config for backend POST
+const MAX_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 1000;
 
 // Debounce state — skip if same tab captured within 2 seconds
 let lastCapture = { tabId: null, time: 0 };
 
 // Last known status for the popup to display
-let lastStatus = { url: null, title: null, timestamp: null, error: null };
+let lastStatus = {
+  url: null,
+  title: null,
+  timestamp: null,
+  error: null,
+  xhrUrls: [],
+};
+
+// ─── Periodic refresh via alarm ──────────────────────────────────────
+
+chrome.alarms.create("ghosttype-refresh", { periodInMinutes: 25 / 60 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "ghosttype-refresh") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) autoCaptureTab(tabs[0].id);
+    });
+  }
+});
+
+// ─── SPA navigation detection ────────────────────────────────────────
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId === 0) {
+    console.log(
+      `[GhostType] onHistoryStateUpdated tabId=${details.tabId} url=${details.url}`,
+    );
+    autoCaptureTab(details.tabId);
+  }
+});
+
+// ─── Retry helper ────────────────────────────────────────────────────
+
+/**
+ * POST payload to backend with exponential backoff retry.
+ * Returns the Response on success, or throws on exhausted retries.
+ */
+async function postWithRetry(payload) {
+  let lastError;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(BACKEND_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) return res;
+
+      // Non-retryable client errors (4xx)
+      if (res.status >= 400 && res.status < 500) {
+        const text = await res.text();
+        throw new Error(`Backend returned ${res.status}: ${text}`);
+      }
+
+      // Server error (5xx) — retry
+      lastError = new Error(`Backend returned ${res.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+
+    if (attempt < MAX_RETRIES - 1) {
+      const delay = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+      console.log(
+        `[GhostType] POST retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`,
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
+
+// ─── Core capture logic ──────────────────────────────────────────────
 
 /**
  * Extract page content and POST to backend.
@@ -28,20 +105,33 @@ async function pushContext(tabId) {
   let response;
   try {
     // Content script should already be loaded (declared in manifest)
-    response = await chrome.tabs.sendMessage(tabId, { action: "extractContent" });
-    console.log(`[GhostType] sendMessage succeeded (manifest path) tabId=${tabId}`);
+    response = await chrome.tabs.sendMessage(tabId, {
+      action: "extractContent",
+    });
+    console.log(
+      `[GhostType] sendMessage succeeded (manifest path) tabId=${tabId}`,
+    );
   } catch {
     // Fallback: inject manually (page was open before extension loaded)
-    console.log(`[GhostType] sendMessage failed, trying executeScript fallback tabId=${tabId}`);
+    console.log(
+      `[GhostType] sendMessage failed, trying executeScript fallback tabId=${tabId}`,
+    );
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ["content.js"],
       });
-      response = await chrome.tabs.sendMessage(tabId, { action: "extractContent" });
-      console.log(`[GhostType] executeScript fallback succeeded tabId=${tabId}`);
+      response = await chrome.tabs.sendMessage(tabId, {
+        action: "extractContent",
+      });
+      console.log(
+        `[GhostType] executeScript fallback succeeded tabId=${tabId}`,
+      );
     } catch (err) {
-      console.warn(`[GhostType] pushContext failed entirely tabId=${tabId}:`, err.message);
+      console.warn(
+        `[GhostType] pushContext failed entirely tabId=${tabId}:`,
+        err.message,
+      );
       return { ok: false, error: err.message };
     }
   }
@@ -51,22 +141,20 @@ async function pushContext(tabId) {
     return { ok: false, error: response.error };
   }
 
-  // Push to backend
+  // Push to backend with retry
   try {
-    const res = await fetch(BACKEND_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(response),
-    });
+    await postWithRetry(response);
+    console.log(`[GhostType] backend POST success for ${response.url}`);
 
-    if (!res.ok) {
-      const text = await res.text();
-      console.warn(`[GhostType] backend POST failed: ${res.status} ${text}`);
-      return { ok: false, error: `Backend returned ${res.status}: ${text}` };
+    // Clear XHR buffer in content script to prevent resending stale data
+    try {
+      await chrome.tabs.sendMessage(tabId, { action: "clearXhrData" });
+    } catch {
+      // Content script may not be loaded yet — safe to ignore
     }
 
-    console.log(`[GhostType] backend POST success for ${response.url}`);
-    return { ok: true, title: response.title, url: response.url };
+    const xhrUrls = (response.xhr_data || []).map((e) => e.url);
+    return { ok: true, title: response.title, url: response.url, xhrUrls };
   } catch (err) {
     console.warn(`[GhostType] backend POST error:`, err.message);
     return { ok: false, error: err.message };
@@ -93,16 +181,23 @@ async function autoCaptureTab(tabId) {
       lastStatus = {
         url: result.url,
         title: result.title,
-        timestamp: now,
+        timestamp: Date.now(),
         error: null,
+        xhrUrls: result.xhrUrls || [],
       };
     } else {
-      lastStatus = { ...lastStatus, error: result.error, timestamp: now };
+      lastStatus = {
+        ...lastStatus,
+        error: result.error,
+        timestamp: Date.now(),
+      };
     }
   } catch (err) {
-    lastStatus = { ...lastStatus, error: err.message, timestamp: now };
+    lastStatus = { ...lastStatus, error: err.message, timestamp: Date.now() };
   }
 }
+
+// ─── Event listeners ─────────────────────────────────────────────────
 
 // Auto-capture when the user switches to a different tab
 chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -113,7 +208,9 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 // Auto-capture when a page finishes loading (main frame only)
 chrome.webNavigation.onCompleted.addListener((details) => {
   if (details.frameId === 0) {
-    console.log(`[GhostType] onCompleted tabId=${details.tabId} url=${details.url}`);
+    console.log(
+      `[GhostType] onCompleted tabId=${details.tabId} url=${details.url}`,
+    );
     autoCaptureTab(details.tabId);
   }
 });
@@ -136,6 +233,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             title: result.title,
             timestamp: Date.now(),
             error: null,
+            xhrUrls: result.xhrUrls || [],
           };
         }
         sendResponse(result);

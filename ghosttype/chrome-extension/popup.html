@@ -44,12 +44,33 @@
     }
     #status.error { color: #dc2626; }
     #status.success { color: #16a34a; }
+    #status.warning { color: #d97706; }
+    #xhr-list {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #94a3b8;
+      max-height: 80px;
+      overflow: hidden;
+    }
+    #xhr-list .xhr-label {
+      font-weight: 500;
+      color: #64748b;
+      margin-bottom: 2px;
+    }
+    #xhr-list .xhr-url {
+      font-family: "SF Mono", Menlo, monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.5;
+    }
   </style>
 </head>
 <body>
   <h1><span>👻</span> GhostType</h1>
   <button id="capture">Capture Now</button>
   <div id="status">Waiting for tab...</div>
+  <div id="xhr-list" style="display:none"></div>
   <script src="popup.js"></script>
 </body>
 </html>

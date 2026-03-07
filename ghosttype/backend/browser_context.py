@@ -14,6 +14,7 @@ class BrowserContext:
     content: str
     selected_text: str
     timestamp: float
+    xhr_data: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -22,6 +23,7 @@ class BrowserContext:
             "content": self.content,
             "selected_text": self.selected_text,
             "timestamp": self.timestamp,
+            "xhr_data": list(self.xhr_data),
         }
 
 

@@ -93,6 +93,7 @@ class BrowserContextRequest(BaseModel):
     title: str = ""
     content: str = ""
     selected_text: str = ""
+    xhr_data: list[dict] | None = None
 
 
 @app.post("/browser-context")
@@ -102,15 +103,41 @@ async def post_browser_context(req: BrowserContextRequest):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=400, content={"error": "url is required"})
 
+    # Validate and truncate xhr_data
+    xhr_entries: tuple[dict, ...] = ()
+    if req.xhr_data:
+        MAX_XHR_ENTRIES = 20
+        MAX_XHR_URL_LEN = 500
+        MAX_XHR_BODY_LEN = 30_000
+        MAX_XHR_TOTAL = 30_000
+
+        truncated_entries = []
+        total_chars = 0
+        for entry in req.xhr_data[:MAX_XHR_ENTRIES]:
+            url = str(entry.get("url", ""))[:MAX_XHR_URL_LEN]
+            data = entry.get("data")
+            data_str = json.dumps(data) if data is not None else ""
+            if len(data_str) > MAX_XHR_BODY_LEN:
+                data = None  # body too large — keep URL, discard body
+                data_str = ""
+            entry_chars = len(url) + len(data_str)
+            if total_chars + entry_chars > MAX_XHR_TOTAL:
+                break
+            truncated_entries.append({"url": url, "data": data})
+            total_chars += entry_chars
+        xhr_entries = tuple(truncated_entries)
+
     ctx = BrowserContext(
         url=req.url,
         title=req.title,
         content=req.content,
         selected_text=req.selected_text,
         timestamp=time.time(),
+        xhr_data=xhr_entries,
     )
     browser_context_store.set(ctx)
-    logger.info("Browser context updated: url=%s, content_len=%d", req.url, len(req.content))
+    logger.info("Browser context updated: url=%s, content_len=%d, xhr_entries=%d",
+                req.url, len(req.content), len(xhr_entries))
     logger.debug("Browser context detail: title=%r, selected_text_len=%d, content_preview=%r",
                  req.title, len(req.selected_text), req.content[:200])
     return {"status": "ok"}
@@ -268,6 +295,35 @@ def classify_mode_type(mode: str, context: str, prompt: str) -> str:
     if context:
         return "draft"
     return "chat"
+
+
+def format_xhr_data(xhr_data: list[dict] | None, max_total: int = 5000) -> str:
+    """Format XHR capture entries into a text block for prompt injection.
+
+    Each entry is rendered as:
+        [url]
+        {json body}
+
+    Stops adding entries once max_total chars is reached.
+    """
+    if not xhr_data:
+        return ""
+
+    parts = []
+    total = 0
+    for entry in xhr_data:
+        url = entry.get("url", "")
+        data = entry.get("data")
+        if data is not None:
+            body = json.dumps(data, indent=None, ensure_ascii=False)
+        else:
+            body = ""
+        block = f"[{url}]\n{body}" if body else f"[{url}]"
+        if total + len(block) > max_total and parts:
+            break
+        parts.append(block)
+        total += len(block)
+    return "\n\n".join(parts)
 
 
 def build_message(prompt: str, context: str, mode: str, browser_context: str = "") -> str:
@@ -460,6 +516,10 @@ async def generate(websocket: WebSocket):
                     browser_ctx_text = bc.content[:10_000]
                     if bc.selected_text:
                         browser_ctx_text += f"\n\nUser's selection on the page:\n{bc.selected_text[:2_000]}"
+                    # Append XHR/fetch API response data
+                    xhr_text = format_xhr_data(list(bc.xhr_data), max_total=5_000)
+                    if xhr_text:
+                        browser_ctx_text += f"\n\nAPI responses captured from the page:\n{xhr_text}"
 
             if browser_ctx_text:
                 logger.debug("Browser context injected: len=%d, preview=%r", len(browser_ctx_text), browser_ctx_text[:200])
