@@ -40,24 +40,23 @@ final class MarkdownBlockCache {
         lastParsedText = ""
     }
 
-    /// Incremental re-parse: keep all blocks except the last one (which may be incomplete),
-    /// then re-parse from that block's start offset through the end of the new text.
+    /// Incremental re-parse: find the last block boundary (blank line) in the previous text,
+    /// keep blocks that ended before it, and re-parse from the boundary through the end of new text.
     private func parseIncrementally(fullText: String, previousText: String, suffix: String) -> [MarkdownView.Block]? {
-        guard cachedBlocks.count > 0 else { return nil }
+        guard cachedBlocks.count > 1 else { return nil }
 
-        // Drop the last block (it might have been a partial paragraph or code block during streaming)
-        let keepCount = max(0, cachedBlocks.count - 1)
-        let kept = Array(cachedBlocks.prefix(keepCount))
+        // Find the last block boundary (blank line) in the previously parsed text
+        guard let boundaryRange = previousText.range(of: "\n\n", options: .backwards) else {
+            return nil  // no boundary found — full re-parse
+        }
 
-        // Find approximate offset where the last kept block ends.
-        // We reconstruct by re-parsing from the kept blocks' text length.
-        let keptTextLength = kept.reduce(0) { $0 + $1.approximateTextLength }
-        // Add newlines between blocks
-        let keptOffset = keptTextLength + max(0, kept.count - 1)
+        // Keep blocks parsed from the prefix before the boundary
+        let prefixText = String(previousText[..<boundaryRange.lowerBound])
+        let kept = MarkdownView.parseBlocksStatic(prefixText)
 
-        // Re-parse from the safe offset
-        let safeStart = fullText.index(fullText.startIndex, offsetBy: min(keptOffset, fullText.count))
-        let tailText = String(fullText[safeStart...])
+        // Re-parse from the boundary through the end of new text
+        let tailStart = fullText.index(fullText.startIndex, offsetBy: prefixText.count)
+        let tailText = String(fullText[tailStart...])
         let tailBlocks = MarkdownView.parseBlocksStatic(tailText)
 
         return kept + tailBlocks
@@ -97,23 +96,6 @@ struct MarkdownView: View {
         case listItem(bullet: String, text: String)
         case paragraph(text: String)
         case divider
-
-        /// Approximate character count of the block's text content (used for incremental parsing offset).
-        var approximateTextLength: Int {
-            switch self {
-            case .codeBlock(let language, let code):
-                // ``` + language + \n + code + \n + ```
-                return 3 + language.count + 1 + code.count + 1 + 3
-            case .heading(let level, let text):
-                return level + 1 + text.count  // "## " + text
-            case .listItem(_, let text):
-                return 2 + text.count  // "- " + text
-            case .paragraph(let text):
-                return text.count
-            case .divider:
-                return 3  // "---"
-            }
-        }
     }
 
     // MARK: - Rendering
