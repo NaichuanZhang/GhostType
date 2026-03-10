@@ -9,6 +9,7 @@ struct PromptPanelView: View {
     @State private var showHistorySidebar = false
     @State private var showMentionPopup = false
     @State private var tabMonitor: Any?
+    @State private var intrinsicTextHeight: CGFloat = 36
 
     /// Whether the conversation has had at least one completed turn.
     private var hasConversationHistory: Bool {
@@ -265,25 +266,39 @@ struct PromptPanelView: View {
 
     // MARK: - Prompt Input
 
+    private var promptEditorHeight: CGFloat {
+        let minH: CGFloat = 36   // ~1 line
+        let maxH: CGFloat = 200  // ~8 lines
+        return min(max(intrinsicTextHeight, minH), maxH)
+    }
+
     private var promptInput: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "sparkles")
                 .font(.system(size: 14))
                 .foregroundStyle(.purple)
-                .padding(.top, 2)
+                .padding(.top, 8)
 
-            TextField(
-                promptPlaceholder,
-                text: $appState.promptText,
-                axis: .vertical
-            )
-                .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .lineLimit(1...4)
-                .focused($isPromptFocused)
-                .onSubmit {
-                    handleEnterKey()
+            ZStack(alignment: .topLeading) {
+                // Placeholder text
+                if appState.promptText.isEmpty {
+                    Text(promptPlaceholder)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                        .allowsHitTesting(false)
                 }
+
+                AutoGrowingTextView(
+                    text: $appState.promptText,
+                    intrinsicHeight: $intrinsicTextHeight,
+                    font: .systemFont(ofSize: 14),
+                    maxHeight: 200,
+                    isFocused: isPromptFocused
+                )
+                .frame(height: promptEditorHeight)
+            }
+            .animation(.easeInOut(duration: 0.15), value: promptEditorHeight)
 
             // Submit button (visible when there's a prompt or selected context to act on)
             if (!appState.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -295,7 +310,7 @@ struct PromptPanelView: View {
                         .foregroundStyle(.purple)
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 0)
+                .padding(.top, 6)
             }
         }
         .overlay(alignment: .topLeading) {
