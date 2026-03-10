@@ -172,6 +172,13 @@ class AppState: ObservableObject {
     /// Used to restore selection for text replacement after a rewrite.
     var selectedTextRange: CFRange?
 
+    /// Timestamp when the panel was last dismissed. Used with `sessionResumeTimeout`
+    /// to decide whether to restore the previous session on re-invoke.
+    var lastPanelDismissTime: Date?
+
+    /// How long (in seconds) after dismiss the previous session can be resumed.
+    static let sessionResumeTimeout: TimeInterval = 120
+
     /// Base64-encoded JPEG screenshot of the frontmost app's window, captured when the panel opened.
     /// Sent to the backend as visual context for the agent.
     var screenshotBase64: String?
@@ -344,18 +351,39 @@ class AppState: ObservableObject {
         clearResponse()
     }
 
+    // MARK: - Session Resume
+
+    /// Returns true when the previous session should be restored (dismissed recently + has messages).
+    func shouldResumeSession(now: Date = Date()) -> Bool {
+        guard let dismissTime = lastPanelDismissTime else { return false }
+        guard !conversationMessages.isEmpty else { return false }
+        return now.timeIntervalSince(dismissTime) < Self.sessionResumeTimeout
+    }
+
+    /// Records the current time as the panel dismiss timestamp.
+    func recordPanelDismiss(at date: Date = Date()) {
+        lastPanelDismissTime = date
+    }
+
+    /// Clears screenshot state only, preserving conversation and all other state.
+    func refreshScreenshot() {
+        screenshotBase64 = nil
+        screenshotImage = nil
+    }
+
     // MARK: - Session Persistence
 
     /// Builds a Session from the current conversation state.
     /// Returns nil if fewer than 2 messages (need at least 1 user + 1 assistant).
-    func buildSessionFromConversation() -> Session? {
-        guard conversationMessages.count >= 2 else { return nil }
+    func buildSessionFromConversation(messages: [ConversationMessage]? = nil) -> Session? {
+        let msgs = messages ?? conversationMessages
+        guard msgs.count >= 2 else { return nil }
 
-        let firstUserContent = conversationMessages.first(where: { $0.role == "user" })?.content ?? ""
+        let firstUserContent = msgs.first(where: { $0.role == "user" })?.content ?? ""
         let title = Session.generateTitle(from: firstUserContent)
         let now = Date()
 
-        let sessionMessages = conversationMessages.enumerated().map { index, msg in
+        let sessionMessages = msgs.enumerated().map { index, msg in
             SessionMessage(
                 id: msg.id.uuidString,
                 role: msg.role,
@@ -369,8 +397,8 @@ class AppState: ObservableObject {
         return Session(
             id: UUID().uuidString,
             title: title,
-            createdAt: conversationMessages.first?.timestamp ?? now,
-            updatedAt: conversationMessages.last?.timestamp ?? now,
+            createdAt: msgs.first?.timestamp ?? now,
+            updatedAt: msgs.last?.timestamp ?? now,
             mode: conversationMode == .chat ? "chat" : "draft",
             agentId: effectiveAgentId(),
             modelId: modelId,
@@ -381,11 +409,12 @@ class AppState: ObservableObject {
     /// Saves the current conversation as a session (if it has enough messages).
     /// Also saves any attached screenshot.
     func saveCurrentSession() {
-        // Archive in-flight response that hasn't been moved to conversationMessages yet
+        // Build messages for saving without mutating conversationMessages
+        var messagesForSave = conversationMessages
         if !responseText.isEmpty {
-            appendMessage(role: "assistant", content: responseText)
+            messagesForSave.append(ConversationMessage(role: "assistant", content: responseText))
         }
-        guard var session = buildSessionFromConversation() else { return }
+        guard var session = buildSessionFromConversation(messages: messagesForSave) else { return }
 
         // Save screenshot if present
         if let base64 = screenshotBase64, let data = Data(base64Encoded: base64) {

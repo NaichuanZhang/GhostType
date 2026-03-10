@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 @testable import GhostTypeLib
 
 private func makeAppState() -> AppState {
@@ -413,6 +414,20 @@ private func cleanup(_ url: URL) {
     #expect(sessions[0].title == "Hello")
 }
 
+@Test func saveCurrentSessionDoesNotMutateConversationMessages() {
+    let (state, base) = makeAppStateWithTempStore()
+    defer { cleanup(base) }
+
+    state.appendMessage(role: "user", content: "Write me a poem")
+    state.responseText = "Roses are red"
+
+    let countBefore = state.conversationMessages.count
+    state.saveCurrentSession()
+
+    #expect(state.conversationMessages.count == countBefore)
+    #expect(state.conversationMessages.last?.role == "user")
+}
+
 @Test func saveCurrentSessionSkipsEmptyConversation() {
     let (state, base) = makeAppStateWithTempStore()
     defer { cleanup(base) }
@@ -608,6 +623,118 @@ private func cleanup(_ url: URL) {
     let saved = sessions.first(where: { $0.title == "Old question" })
     #expect(saved != nil)
 }
+
+// MARK: - Session Resume (shouldResumeSession / recordPanelDismiss / refreshScreenshot)
+
+@Test func shouldResumeSessionReturnsFalseWhenNeverDismissed() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+
+    #expect(state.shouldResumeSession() == false)
+}
+
+@Test func shouldResumeSessionReturnsFalseWhenNoMessages() {
+    let state = makeAppState()
+    state.recordPanelDismiss()
+
+    #expect(state.shouldResumeSession() == false)
+}
+
+@Test func shouldResumeSessionReturnsTrueWithinTimeout() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+
+    let dismissTime = Date()
+    state.recordPanelDismiss(at: dismissTime)
+
+    // Check 30 seconds later — well within 120s
+    let now = dismissTime.addingTimeInterval(30)
+    #expect(state.shouldResumeSession(now: now) == true)
+}
+
+@Test func shouldResumeSessionReturnsFalseAfterTimeout() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+
+    let dismissTime = Date()
+    state.recordPanelDismiss(at: dismissTime)
+
+    // Check 3 minutes later — past 120s
+    let now = dismissTime.addingTimeInterval(180)
+    #expect(state.shouldResumeSession(now: now) == false)
+}
+
+@Test func shouldResumeSessionReturnsFalseAtExactBoundary() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+
+    let dismissTime = Date()
+    state.recordPanelDismiss(at: dismissTime)
+
+    // Exactly 120s — should NOT resume (boundary is exclusive)
+    let now = dismissTime.addingTimeInterval(120)
+    #expect(state.shouldResumeSession(now: now) == false)
+}
+
+@Test func shouldResumeSessionReturnsTrueWithSingleMessage() {
+    let state = makeAppState()
+    // Even a single user message (partial conversation) should allow resume
+    state.appendMessage(role: "user", content: "half-typed thought")
+
+    let dismissTime = Date()
+    state.recordPanelDismiss(at: dismissTime)
+
+    let now = dismissTime.addingTimeInterval(10)
+    #expect(state.shouldResumeSession(now: now) == true)
+}
+
+@Test func recordPanelDismissSetsTimestamp() {
+    let state = makeAppState()
+    let before = Date()
+    state.recordPanelDismiss()
+    let after = Date()
+
+    #expect(state.lastPanelDismissTime != nil)
+    #expect(state.lastPanelDismissTime! >= before)
+    #expect(state.lastPanelDismissTime! <= after)
+}
+
+@Test func clearConversationResetsResumeEligibility() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.recordPanelDismiss()
+
+    state.clearConversation()
+
+    // After clearConversation, no messages → should not resume
+    #expect(state.shouldResumeSession() == false)
+}
+
+@Test func refreshScreenshotClearsScreenshotButKeepsConversation() {
+    let state = makeAppState()
+    state.appendMessage(role: "user", content: "q")
+    state.appendMessage(role: "assistant", content: "a")
+    state.screenshotBase64 = "abc123"
+    state.screenshotImage = NSImage()
+    state.responseText = "some response"
+    state.conversationMode = .chat
+
+    state.refreshScreenshot()
+
+    // Screenshot cleared
+    #expect(state.screenshotBase64 == nil)
+    #expect(state.screenshotImage == nil)
+    // Conversation preserved
+    #expect(state.conversationMessages.count == 2)
+    #expect(state.responseText == "some response")
+    #expect(state.conversationMode == .chat)
+}
+
+// MARK: - deleteSession
 
 @Test func deleteSessionRemovesAndRefreshes() throws {
     let (state, base) = makeAppStateWithTempStore()

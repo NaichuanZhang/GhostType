@@ -114,14 +114,23 @@ class PanelManager {
 
             self.appState.targetElement = cursorInfo?.element
             self.appState.targetBundleID = effectiveBundleID
-            self.appState.clearConversation()
-            // Set context AFTER clearConversation (which clears selectedContext)
+
+            let isResume = self.appState.shouldResumeSession()
+            if isResume {
+                // Quick re-invoke: keep conversation, clear stale screenshot
+                self.appState.refreshScreenshot()
+                NSLog("[GhostType][Show] Resuming previous session (%d messages)",
+                      self.appState.conversationMessages.count)
+            } else {
+                self.appState.clearConversation()
+                // Reset backend agent history for fresh conversation
+                self.appState.wsClient.sendNewConversation()
+            }
+
+            // Set context AFTER resume/clear decision (clearConversation resets selectedContext)
             self.appState.selectedContext = cursorInfo?.selectedText ?? ""
             self.appState.selectedTextRange = cursorInfo?.selectedRange
             self.appState.isPromptVisible = true
-
-            // Reset backend agent history for fresh conversation
-            self.appState.wsClient.sendNewConversation()
 
             let panel = self.getOrCreatePanel()
 
@@ -168,7 +177,8 @@ class PanelManager {
     func hide() {
         panel?.orderOut(nil)
         appState.isPromptVisible = false
-        appState.clearConversation()
+        appState.saveCurrentSession()
+        appState.recordPanelDismiss()
         stopEscapeMonitor()
 
         if let prev = previousApp {
