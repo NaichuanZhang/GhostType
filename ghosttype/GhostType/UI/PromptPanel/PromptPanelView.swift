@@ -139,7 +139,7 @@ struct PromptPanelView: View {
                 submitPrompt()
             }
         }
-        .onReceive(appState.$isGenerating) { isGenerating in
+        .onReceive(appState.$isGenerating.dropFirst()) { isGenerating in
             if !isGenerating && appState.pendingSubmit {
                 appState.pendingSubmit = false
                 NSLog("[GhostType][Submit] Generation complete — firing pending submit")
