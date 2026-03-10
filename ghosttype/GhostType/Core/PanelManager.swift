@@ -8,6 +8,14 @@ class NonInteractiveWebView: WKWebView {
     override var acceptsFirstResponder: Bool { false }
 }
 
+/// Actions that a key event in the panel can resolve to.
+enum KeyAction: Equatable {
+    case dismiss          // Escape
+    case insertNewline    // Shift+Enter
+    case handleEnter      // Enter (response ready, no modifiers)
+    case passThrough      // Let event reach TextField
+}
+
 /// Manages the floating prompt panel — creation, positioning, show/hide.
 class PanelManager {
     private var panel: FloatingPanel?
@@ -36,6 +44,34 @@ class PanelManager {
             self?.hide()
         }
 
+    }
+
+    // MARK: - Key Event Routing
+
+    /// Pure function that determines the action for a key event.
+    /// Extracted from the event monitor closure to enable unit testing.
+    static func routeKeyEvent(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        hasResponse: Bool,
+        isGenerating: Bool
+    ) -> KeyAction {
+        if keyCode == 53 { // Escape
+            return .dismiss
+        }
+        if keyCode == 36 { // Enter / Return
+            let deviceFlags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if deviceFlags.contains(.shift) {
+                return .insertNewline
+            }
+            if deviceFlags.isEmpty && hasResponse && !isGenerating {
+                return .handleEnter
+            }
+            if deviceFlags.isEmpty {
+                return .passThrough
+            }
+        }
+        return .passThrough
     }
 
     deinit {
@@ -197,26 +233,33 @@ class PanelManager {
     private func startEscapeMonitor() {
         guard escapeMonitor == nil else { return }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 { // Escape
+            let hasResponse = !(self?.appState.responseText.isEmpty ?? true)
+            let isGenerating = self?.appState.isGenerating ?? false
+
+            let action = PanelManager.routeKeyEvent(
+                keyCode: event.keyCode,
+                modifierFlags: event.modifierFlags,
+                hasResponse: hasResponse,
+                isGenerating: isGenerating
+            )
+
+            switch action {
+            case .dismiss:
                 self?.hide()
                 return nil
-            }
-            // Enter key (keyCode 36) with no modifiers — route through handleEnterKey
-            if event.keyCode == 36,
-               event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-                let hasResponse = !(self?.appState.responseText.isEmpty ?? true)
-                let isGenerating = self?.appState.isGenerating ?? false
-                NSLog("[GhostType][KeyMonitor] Enter pressed — hasResponse: %@, isGenerating: %@",
-                      hasResponse ? "YES" : "NO", isGenerating ? "YES" : "NO")
-                if hasResponse && !isGenerating {
-                    NSLog("[GhostType][KeyMonitor] Consuming Enter, posting ghostTypeEnterPressed")
-                    NotificationCenter.default.post(name: .ghostTypeEnterPressed, object: nil)
-                    return nil // Consume — don't let .onSubmit also fire
+            case .insertNewline:
+                NSLog("[GhostType][KeyMonitor] Shift+Enter — inserting newline")
+                DispatchQueue.main.async {
+                    self?.appState.promptText.append("\n")
                 }
-                // No response ready — let Enter pass through to TextField's .onSubmit
-                NSLog("[GhostType][KeyMonitor] Passing Enter through to TextField")
+                return nil
+            case .handleEnter:
+                NSLog("[GhostType][KeyMonitor] Enter — response ready, posting ghostTypeEnterPressed")
+                NotificationCenter.default.post(name: .ghostTypeEnterPressed, object: nil)
+                return nil
+            case .passThrough:
+                return event
             }
-            return event
         }
     }
 
