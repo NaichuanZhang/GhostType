@@ -13,6 +13,7 @@ enum KeyAction: Equatable {
     case dismiss          // Escape
     case insertNewline    // Shift+Enter
     case handleEnter      // Enter (response ready, no modifiers)
+    case submit           // Cmd+Enter
     case passThrough      // Let event reach TextField
 }
 
@@ -61,6 +62,9 @@ class PanelManager {
         }
         if keyCode == 36 { // Enter / Return
             let deviceFlags = modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if deviceFlags == .command {
+                return .submit
+            }
             if deviceFlags.contains(.shift) {
                 return .insertNewline
             }
@@ -256,6 +260,10 @@ class PanelManager {
             case .handleEnter:
                 NSLog("[GhostType][KeyMonitor] Enter — response ready, posting ghostTypeEnterPressed")
                 NotificationCenter.default.post(name: .ghostTypeEnterPressed, object: nil)
+                return nil
+            case .submit:
+                NSLog("[GhostType][KeyMonitor] Cmd+Enter — posting ghostTypeSubmitPressed")
+                NotificationCenter.default.post(name: .ghostTypeSubmitPressed, object: nil)
                 return nil
             case .passThrough:
                 return event

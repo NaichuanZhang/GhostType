@@ -64,3 +64,34 @@ import Cocoa
     )
     #expect(action == .passThrough)
 }
+
+@Test func cmdEnterSubmits() {
+    let action = PanelManager.routeKeyEvent(
+        keyCode: 36,
+        modifierFlags: .command,
+        hasResponse: false,
+        isGenerating: false
+    )
+    #expect(action == .submit)
+}
+
+@Test func cmdEnterSubmitsDuringGeneration() {
+    let action = PanelManager.routeKeyEvent(
+        keyCode: 36,
+        modifierFlags: .command,
+        hasResponse: true,
+        isGenerating: true
+    )
+    #expect(action == .submit)
+}
+
+@Test func cmdShiftEnterInsertsNewline() {
+    // Cmd+Shift+Enter falls through to the shift check — no accidental submit
+    let action = PanelManager.routeKeyEvent(
+        keyCode: 36,
+        modifierFlags: [.command, .shift],
+        hasResponse: false,
+        isGenerating: false
+    )
+    #expect(action == .insertNewline)
+}

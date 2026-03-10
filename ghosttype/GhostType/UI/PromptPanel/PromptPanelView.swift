@@ -130,6 +130,22 @@ struct PromptPanelView: View {
             guard !appState.responseText.isEmpty, !appState.isGenerating else { return }
             handleEnterKey()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ghostTypeSubmitPressed)) { _ in
+            if appState.isGenerating {
+                // Queue: auto-submit when generation completes
+                appState.pendingSubmit = true
+                NSLog("[GhostType][Submit] Cmd+Enter during generation — queued pending submit")
+            } else {
+                submitPrompt()
+            }
+        }
+        .onReceive(appState.$isGenerating) { isGenerating in
+            if !isGenerating && appState.pendingSubmit {
+                appState.pendingSubmit = false
+                NSLog("[GhostType][Submit] Generation complete — firing pending submit")
+                submitPrompt()
+            }
+        }
     }
 
     // MARK: - Header
@@ -716,11 +732,11 @@ struct PromptPanelView: View {
             Spacer()
 
             if appState.conversationMode == .draft {
-                Text(hasContext ? "Enter to replace" : "Enter to insert")
+                Text(hasContext ? "Enter to replace · ⌘Enter to send" : "Enter to insert · ⌘Enter to send")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             } else {
-                Text("Enter to continue")
+                Text("Enter to continue · ⌘Enter to send")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -1105,4 +1121,5 @@ struct PromptPanelView: View {
 extension Notification.Name {
     static let ghostTypeDismissPanel = Notification.Name("ghostTypeDismissPanel")
     static let ghostTypeEnterPressed = Notification.Name("ghostTypeEnterPressed")
+    static let ghostTypeSubmitPressed = Notification.Name("ghostTypeSubmitPressed")
 }

@@ -141,6 +141,7 @@ class AppState: ObservableObject {
     @Published var responseViewTab: ResponseViewTab = .generated
     @Published var conversationMessages: [ConversationMessage] = []
     @Published var conversationMode: ConversationMode = .draft
+    @Published var pendingSubmit = false
 
     // MARK: - Tool Call Tracking
     @Published var activeToolCalls: [ToolCallInfo] = []
