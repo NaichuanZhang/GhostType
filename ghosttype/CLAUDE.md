@@ -73,16 +73,25 @@ Ctrl+K → HotkeyManager → PanelManager.show() → AccessibilityEngine.getCurs
 
 SPM package split into `GhostTypeLib` (library) and `GhostType` (executable in `GhostTypeMain/`). Uses `main.swift` with manual `NSApplication` bootstrap (not `@main`) because SwiftUI `@main` requires Xcode-managed bundles.
 
-**Core components** (`Core/`):
+**App** (`App/`):
+- `AppState` — single `ObservableObject`, shared via `@EnvironmentObject`. Holds all UI state, WebSocket client, session store, agent service, and settings.
+- `AppDelegate` — `NSApplicationDelegate` handling app lifecycle, dock icon hiding, menu bar setup.
+
+**Core** (`Core/`):
 - `HotkeyManager` — global Ctrl+K via `CGEventTap` (intercepts and consumes)
 - `AccessibilityEngine` — AX API: cursor position, selected text, text insertion
 - `FloatingPanel` — `NSPanel` subclass, non-activating (`.nonactivatingPanel`), resizable, no title bar buttons. Default 480x640, min 380x300, max 1200x900.
-- `PanelManager` — creates/positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left), no dynamic resize logic
+- `PanelManager` — creates/positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left), key event monitoring (Escape dismiss, Cmd+Enter submit)
 - `WebSocketClient` — `URLSessionWebSocketTask`, health poll every 10s, auto-reconnect
 - `AgentService` — fetches agent definitions from `GET /agents`
 - `SessionStore` — persists conversations as JSON at `~/.config/ghosttype/sessions/`
 - `BrowserContextService` — fetches browser context from `GET /browser-context`
-- `AppState` — single `ObservableObject`, shared via `@EnvironmentObject`
+
+**UI** (`UI/`):
+- `PromptPanelView` (~1100 lines) — main prompt input and streaming response view. Largest Swift file.
+- `AutoGrowingTextView` — `NSTextView` wrapped for SwiftUI, grows vertically as text is entered. Handles Shift+Enter (newline) vs Enter (submit).
+- `MarkdownView` — rendered markdown responses with syntax highlighting (Highlightr).
+- `HistorySidebarView`/`SessionDetailView` — session history browser.
 
 **Models** (`Models/`):
 - `AgentInfo` — agent definition from backend, includes `agentForBundle()` for auto-selection
@@ -128,6 +137,8 @@ Server → Client:
 - **Immutable data**: `AgentDefinition`, `AgentRegistrySnapshot`, `ModelConfig` are frozen/immutable dataclasses. Config is loaded once at module level.
 - **Memory always available**: Memory tools are appended to every agent's tool list regardless of what `agents.yaml` specifies.
 - **Accessibility permission**: Required for AX APIs. Without it, APIs silently return nil.
+- **Keyboard shortcuts**: Enter submits prompt, Shift+Enter inserts newline, Cmd+Enter queues a submit during active generation (fires automatically when generation completes), Escape dismisses panel.
+- **@Published animation guard**: `AppState` properties that trigger animations use `didSet` guards (not `willSet`) to prevent initial `@Published` emission from breaking animations on view appear. See commit `d79bd40`.
 
 ## Configuration
 
