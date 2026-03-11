@@ -136,6 +136,8 @@ struct PromptPanelView: View {
                 appState.pendingSubmit = true
                 NSLog("[GhostType][Submit] Cmd+Enter during generation — queued pending submit")
             } else {
+                // Archive any unarchived assistant response before submitting
+                archiveCurrentResponseIfNeeded()
                 submitPrompt()
             }
         }
@@ -143,6 +145,8 @@ struct PromptPanelView: View {
             if !isGenerating && appState.pendingSubmit {
                 appState.pendingSubmit = false
                 NSLog("[GhostType][Submit] Generation complete — firing pending submit")
+                // Archive the just-completed response before submitting the queued prompt
+                archiveCurrentResponseIfNeeded()
                 submitPrompt()
             }
         }
@@ -261,18 +265,25 @@ struct PromptPanelView: View {
             }
 
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
-                Text(message.content)
-                    .font(.system(size: 12))
-                    .foregroundStyle(message.role == "user" ? .white : .primary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        message.role == "user"
-                            ? AnyShapeStyle(.purple.opacity(0.8))
-                            : AnyShapeStyle(.quaternary.opacity(0.5))
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                if message.role == "assistant" {
+                    MarkdownView(text: message.content, isStreaming: false)
+                        .font(.system(size: 12))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(AnyShapeStyle(.quaternary.opacity(0.5)))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .transaction { $0.animation = nil }
+                } else {
+                    Text(message.content)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(AnyShapeStyle(.purple.opacity(0.8)))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
             }
 
             if message.role == "assistant" { Spacer(minLength: 40) }
@@ -693,25 +704,6 @@ struct PromptPanelView: View {
             }
             .buttonStyle(.plain)
 
-            // Speak / Stop TTS button
-            if !appState.minimaxApiKey.isEmpty {
-                Button(action: toggleSpeech) {
-                    HStack(spacing: 4) {
-                        Image(systemName: appState.ttsState == .speaking ? "stop.fill" : "speaker.wave.2")
-                            .font(.system(size: 11))
-                        Text(appState.ttsState == .speaking ? "Stop" : "Speak")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-                .disabled(appState.ttsState == .connecting)
-                .opacity(appState.ttsState == .connecting ? 0.5 : 1.0)
-            }
-
             // Insert button for chat mode (optional — for pasting an answer)
             if appState.conversationMode == .chat {
                 Button(action: insertText) {
@@ -855,6 +847,17 @@ struct PromptPanelView: View {
     }
 
     // MARK: - Multi-Turn Helpers
+
+    /// Archives the current assistant response into conversationMessages if one exists.
+    /// Called before submitPrompt() in paths that bypass completeTurnAndPrepareNext()
+    /// (e.g. Cmd+Enter, pending submit) to prevent losing the previous response.
+    private func archiveCurrentResponseIfNeeded() {
+        guard !appState.responseText.isEmpty, !appState.isGenerating else { return }
+        NSLog("[GhostType][MultiTurn] Archiving unarchived response (len=%d) before new submit",
+              appState.responseText.count)
+        appState.appendMessage(role: "assistant", content: appState.responseText)
+        appState.responseText = ""
+    }
 
     /// Saves the current response as an assistant message and prepares the prompt for the next turn.
     /// If the user already typed a follow-up before pressing Enter, it is submitted automatically
@@ -1095,20 +1098,9 @@ struct PromptPanelView: View {
     }
 
     private func retry() {
-        appState.ttsClient.stop()
         appState.responseText = ""
         appState.errorMessage = nil
         submitPrompt()
-    }
-
-    private func toggleSpeech() {
-        if appState.ttsState == .speaking {
-            appState.ttsClient.stop()
-        } else {
-            appState.ttsClient.voiceId = appState.ttsVoiceId
-            appState.ttsClient.speed = appState.ttsSpeed
-            appState.ttsClient.speak(appState.responseText, apiKey: appState.minimaxApiKey)
-        }
     }
 
     private func dismissPanel() {

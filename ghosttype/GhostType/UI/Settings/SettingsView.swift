@@ -95,36 +95,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Text-to-Speech (MiniMax)") {
-                LabeledContent("API Key") {
-                    SecureField("", text: $appState.minimaxApiKey)
-                }
-                Text("Get your API key from minimax.io")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                LabeledContent("Voice") {
-                    Picker("", selection: $appState.ttsVoiceId) {
-                        Text("Graceful Lady").tag("English_Graceful_Lady")
-                        Text("Insightful Speaker").tag("English_Insightful_Speaker")
-                        Text("Persuasive Man").tag("English_Persuasive_Man")
-                        Text("Lucky Robot").tag("English_Lucky_Robot")
-                        Text("Expressive Narrator").tag("English_expressive_narrator")
-                    }
-                    .labelsHidden()
-                }
-
-                LabeledContent("Speed") {
-                    HStack {
-                        Slider(value: $appState.ttsSpeed, in: 0.5...2.0, step: 0.1)
-                            .frame(width: 150)
-                        Text(String(format: "%.1fx", appState.ttsSpeed))
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 40)
-                    }
-                }
-            }
-
             HStack {
                 Spacer()
                 Button("Save") {
@@ -134,6 +104,6 @@ struct SettingsView: View {
             }
         }
         .padding()
-        .frame(width: 500, height: 750)
+        .frame(width: 500, height: 600)
     }
 }

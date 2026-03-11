@@ -56,7 +56,6 @@ Key components in `GhostType/Core/`:
 - **FloatingPanel**: Custom `NSPanel` subclass overriding `canBecomeKey` to allow text input in a non-activating panel.
 - **PanelManager**: Creates/positions `FloatingPanel`, handles Escape dismiss, coordinate conversion between AX (top-left origin) and NSWindow (bottom-left origin).
 - **WebSocketClient**: `URLSessionWebSocketTask`-based client with health checks (polls `/health` every 10s), auto-reconnect with exponential backoff, and per-request config support.
-- **TTSClient**: Text-to-speech via WebSocket. Streams audio from a TTS service and plays via `AVAudioPlayer`.
 - **StubAgent**: Simulates streaming AI responses for development without a running backend. Used as fallback when backend is unavailable.
 - **AppState**: Single `ObservableObject` shared via `@EnvironmentObject`. Holds `wsClient`, UI state, AX target element, and settings (provider, credentials). `modelConfigForRequest()` builds the config dict sent with each generation request.
 

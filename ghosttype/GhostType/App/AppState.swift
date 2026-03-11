@@ -94,10 +94,6 @@ private struct DefaultConfig {
     let modelId: String
     let awsProfile: String
     let awsRegion: String
-    let minimaxApiKey: String
-    let ttsVoiceId: String
-    let ttsSpeed: Double
-
     static let shared = DefaultConfig.load()
 
     private static func load() -> DefaultConfig {
@@ -110,10 +106,7 @@ private struct DefaultConfig {
             return DefaultConfig(
                 modelId: "global.anthropic.claude-opus-4-6-v1",
                 awsProfile: "",
-                awsRegion: "us-west-2",
-                minimaxApiKey: "",
-                ttsVoiceId: "English_Graceful_Lady",
-                ttsSpeed: 1.0
+                awsRegion: "us-west-2"
             )
         }
 
@@ -121,10 +114,7 @@ private struct DefaultConfig {
         return DefaultConfig(
             modelId: json["modelId"] as? String ?? "global.anthropic.claude-opus-4-6-v1",
             awsProfile: json["awsProfile"] as? String ?? "",
-            awsRegion: json["awsRegion"] as? String ?? "us-west-2",
-            minimaxApiKey: json["minimaxApiKey"] as? String ?? "",
-            ttsVoiceId: json["ttsVoiceId"] as? String ?? "English_Graceful_Lady",
-            ttsSpeed: json["ttsSpeed"] as? Double ?? 1.0
+            awsRegion: json["awsRegion"] as? String ?? "us-west-2"
         )
     }
 }
@@ -190,9 +180,6 @@ class AppState: ObservableObject {
     /// WebSocket client for backend communication.
     let wsClient = WebSocketClient()
 
-    /// Text-to-Speech client for MiniMax T2A API.
-    let ttsClient = TTSClient()
-
     private var cancellables = Set<AnyCancellable>()
 
     // Token batching: buffer tokens and flush periodically to reduce view updates during streaming.
@@ -216,12 +203,6 @@ class AppState: ObservableObject {
     @Published var awsProfile: String = UserDefaults.standard.string(forKey: "awsProfile") ?? DefaultConfig.shared.awsProfile
     @Published var awsRegion: String = UserDefaults.standard.string(forKey: "awsRegion") ?? DefaultConfig.shared.awsRegion
 
-    // TTS settings (MiniMax)
-    @Published var minimaxApiKey: String = UserDefaults.standard.string(forKey: "minimaxApiKey") ?? DefaultConfig.shared.minimaxApiKey
-    @Published var ttsVoiceId: String = UserDefaults.standard.string(forKey: "ttsVoiceId") ?? DefaultConfig.shared.ttsVoiceId
-    @Published var ttsSpeed: Double = UserDefaults.standard.double(forKey: "ttsSpeed") == 0 ? DefaultConfig.shared.ttsSpeed : UserDefaults.standard.double(forKey: "ttsSpeed")
-    @Published var ttsState: TTSState = .idle
-
     init() {
         // Sync backend availability → backendStatus
         wsClient.$backendAvailable
@@ -237,11 +218,6 @@ class AppState: ObservableObject {
                     self?.backendStatus = .stopped
                 }
             }
-            .store(in: &cancellables)
-
-        ttsClient.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newState in self?.ttsState = newState }
             .store(in: &cancellables)
 
         loadSessionHistory()
@@ -285,9 +261,6 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(modelId, forKey: "modelId")
         UserDefaults.standard.set(awsProfile, forKey: "awsProfile")
         UserDefaults.standard.set(awsRegion, forKey: "awsRegion")
-        UserDefaults.standard.set(minimaxApiKey, forKey: "minimaxApiKey")
-        UserDefaults.standard.set(ttsVoiceId, forKey: "ttsVoiceId")
-        UserDefaults.standard.set(ttsSpeed, forKey: "ttsSpeed")
     }
 
     /// Fetches browser context from the backend and attaches it.
@@ -305,7 +278,6 @@ class AppState: ObservableObject {
     }
 
     func clearResponse() {
-        ttsClient.stop()
         promptText = ""
         responseText = ""
         selectedContext = ""
