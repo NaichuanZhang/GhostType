@@ -6,9 +6,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Status") {
-                HStack {
-                    Text("Backend")
-                    Spacer()
+                LabeledContent("Backend") {
                     switch appState.backendStatus {
                     case .running:
                         Label("Running", systemImage: "circle.fill")
@@ -22,9 +20,7 @@ struct SettingsView: View {
                     }
                 }
 
-                HStack {
-                    Text("Accessibility")
-                    Spacer()
+                LabeledContent("Accessibility") {
                     if appState.accessibilityGranted {
                         Label("Granted", systemImage: "checkmark.circle.fill")
                             .foregroundColor(.green)
@@ -35,9 +31,7 @@ struct SettingsView: View {
                     }
                 }
 
-                HStack {
-                    Text("Shortcut")
-                    Spacer()
+                LabeledContent("Shortcut") {
                     Text("Ctrl + K")
                         .font(.system(.body, design: .monospaced))
                         .padding(.horizontal, 8)
@@ -48,23 +42,23 @@ struct SettingsView: View {
             }
 
             Section("Model") {
-                TextField("Model ID", text: $appState.modelId)
-                    .textFieldStyle(.roundedBorder)
+                LabeledContent("Model ID") {
+                    TextField("", text: $appState.modelId)
+                }
                 Text("e.g. global.anthropic.claude-opus-4-6-v1")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             Section("AWS Credentials") {
-                TextField("AWS Profile", text: $appState.awsProfile)
-                    .textFieldStyle(.roundedBorder)
+                LabeledContent("AWS Profile") {
+                    TextField("", text: $appState.awsProfile)
+                }
                 Text("Leave blank for default credential chain.")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                HStack {
-                    Text("Region")
-                    Spacer()
+                LabeledContent("Region") {
                     Picker("", selection: $appState.awsRegion) {
                         Text("us-west-2 (Oregon)").tag("us-west-2")
                         Text("us-east-1 (N. Virginia)").tag("us-east-1")
@@ -72,23 +66,22 @@ struct SettingsView: View {
                         Text("ap-northeast-1 (Tokyo)").tag("ap-northeast-1")
                         Text("ap-southeast-1 (Singapore)").tag("ap-southeast-1")
                     }
-                    .frame(width: 220)
+                    .labelsHidden()
                 }
             }
 
             Section("Avatar") {
                 Toggle("Show Avatar Panel", isOn: $appState.showAvatarPanel)
-                TextField("Avatar URL", text: $appState.avatarURL)
-                    .textFieldStyle(.roundedBorder)
+                LabeledContent("Avatar URL") {
+                    TextField("", text: $appState.avatarURL)
+                }
                 Text("URL loaded in the avatar panel (WKWebView).")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             Section("History") {
-                HStack {
-                    Text("Saved Sessions")
-                    Spacer()
+                LabeledContent("Saved Sessions") {
                     Text("\(appState.sessionHistory.count)")
                         .foregroundStyle(.secondary)
                 }
@@ -103,14 +96,14 @@ struct SettingsView: View {
             }
 
             Section("Text-to-Speech (MiniMax)") {
-                SecureField("API Key", text: $appState.minimaxApiKey)
-                    .textFieldStyle(.roundedBorder)
+                LabeledContent("API Key") {
+                    SecureField("", text: $appState.minimaxApiKey)
+                }
                 Text("Get your API key from minimax.io")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                HStack {
-                    Text("Voice")
-                    Spacer()
+
+                LabeledContent("Voice") {
                     Picker("", selection: $appState.ttsVoiceId) {
                         Text("Graceful Lady").tag("English_Graceful_Lady")
                         Text("Insightful Speaker").tag("English_Insightful_Speaker")
@@ -118,16 +111,17 @@ struct SettingsView: View {
                         Text("Lucky Robot").tag("English_Lucky_Robot")
                         Text("Expressive Narrator").tag("English_expressive_narrator")
                     }
-                    .frame(width: 200)
+                    .labelsHidden()
                 }
-                HStack {
-                    Text("Speed")
-                    Spacer()
-                    Slider(value: $appState.ttsSpeed, in: 0.5...2.0, step: 0.1)
-                        .frame(width: 150)
-                    Text(String(format: "%.1fx", appState.ttsSpeed))
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 40)
+
+                LabeledContent("Speed") {
+                    HStack {
+                        Slider(value: $appState.ttsSpeed, in: 0.5...2.0, step: 0.1)
+                            .frame(width: 150)
+                        Text(String(format: "%.1fx", appState.ttsSpeed))
+                            .font(.system(.body, design: .monospaced))
+                            .frame(width: 40)
+                    }
                 }
             }
 
@@ -140,6 +134,6 @@ struct SettingsView: View {
             }
         }
         .padding()
-        .frame(width: 420, height: 720)
+        .frame(width: 500, height: 750)
     }
 }
