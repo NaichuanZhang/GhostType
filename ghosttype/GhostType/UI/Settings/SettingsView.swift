@@ -70,16 +70,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Avatar") {
-                Toggle("Show Avatar Panel", isOn: $appState.showAvatarPanel)
-                LabeledContent("Avatar URL") {
-                    TextField("", text: $appState.avatarURL)
-                }
-                Text("URL loaded in the avatar panel (WKWebView).")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("History") {
                 LabeledContent("Saved Sessions") {
                     Text("\(appState.sessionHistory.count)")

@@ -1,12 +1,5 @@
 import Cocoa
 import SwiftUI
-import Combine
-import WebKit
-
-/// WKWebView subclass that refuses first-responder status to prevent focus theft.
-class NonInteractiveWebView: WKWebView {
-    override var acceptsFirstResponder: Bool { false }
-}
 
 /// Actions that a key event in the panel can resolve to.
 enum KeyAction: Equatable {
@@ -25,14 +18,6 @@ class PanelManager {
     private var dismissObserver: NSObjectProtocol?
     private var escapeMonitor: Any?
     private var previousApp: NSRunningApplication?
-
-    // Avatar panel views
-    private var avatarWebView: NonInteractiveWebView?
-    private var avatarContainer: NSView?
-    private var avatarWidthConstraint: NSLayoutConstraint?
-    private var avatarGapConstraint: NSLayoutConstraint?
-    private var avatarObserver: AnyCancellable?
-    private var loadedAvatarURL: String?
 
     init(appState: AppState) {
         self.appState = appState
@@ -85,7 +70,6 @@ class PanelManager {
         if let monitor = escapeMonitor {
             NSEvent.removeMonitor(monitor)
         }
-        avatarObserver?.cancel()
     }
 
     func toggle() {
@@ -283,105 +267,15 @@ class PanelManager {
     private static let promptWidth: CGFloat = 480
     private static let panelHeight: CGFloat = 640
 
-    /// Total panel width including avatar panel (if visible) and gap.
-    private func panelWidth() -> CGFloat {
-        if appState.showAvatarPanel {
-            return appState.avatarPanelWidth + 6 + Self.promptWidth
-        }
-        return Self.promptWidth
-    }
-
-    /// Returns an HTML wrapper that scales the given URL's iframe to fit the container.
-    private func centeredIframeHTML(for urlString: String) -> String {
-        return """
-        <!DOCTYPE html>
-        <html><head><meta charset="utf-8">
-        <style>
-          html, body {
-            margin: 0; padding: 0; width: 100%; height: 100%;
-            overflow: hidden; background: transparent;
-          }
-          .wrapper {
-            width: 100%; height: 100%;
-            display: flex; justify-content: center; align-items: center;
-            overflow: hidden;
-          }
-          .scaler {
-            width: 1024px; height: 1024px;
-            transform-origin: center center;
-            flex-shrink: 0;
-          }
-          iframe {
-            border: none; width: 100%; height: 100%; display: block;
-          }
-        </style>
-        <script>
-          function fitIframe() {
-            var w = document.documentElement.clientWidth;
-            var h = document.documentElement.clientHeight;
-            var scaler = document.querySelector('.scaler');
-            var scale = Math.min(w / 1024, h / 1024);
-            scaler.style.transform = 'scale(' + scale + ')';
-          }
-          window.addEventListener('resize', fitIframe);
-          window.addEventListener('load', fitIframe);
-        </script>
-        </head><body>
-        <div class="wrapper">
-          <div class="scaler">
-            <iframe src="\(urlString)" allow="autoplay" scrolling="no"></iframe>
-          </div>
-        </div>
-        </body></html>
-        """
-    }
-
-    /// Updates avatar container visibility and adjusts panel width.
-    private func updateAvatarVisibility() {
-        let show = appState.showAvatarPanel
-        avatarContainer?.isHidden = !show
-        avatarWidthConstraint?.constant = show ? appState.avatarPanelWidth : 0
-        avatarGapConstraint?.constant = show ? 6 : 0
-
-        // Adjust panel width for avatar toggle — keep same position and height
-        if let panel = panel, panel.isVisible {
-            let currentFrame = panel.frame
-            let newWidth = panelWidth()
-            if abs(currentFrame.width - newWidth) > 2 {
-                panel.setFrame(NSRect(x: currentFrame.origin.x, y: currentFrame.origin.y,
-                                      width: newWidth, height: currentFrame.height),
-                               display: true, animate: false)
-            }
-        }
-    }
-
     // MARK: - Panel Creation
 
     private func getOrCreatePanel() -> FloatingPanel {
         if let existing = panel {
-            // Ensure panel width matches (avatar toggle), preserve user's height
-            let desiredWidth = panelWidth()
-            let currentFrame = existing.frame
-            if abs(currentFrame.width - desiredWidth) > 2 {
-                existing.setFrame(NSRect(x: currentFrame.origin.x, y: currentFrame.origin.y,
-                                         width: desiredWidth, height: currentFrame.height),
-                                  display: false)
-            }
-            // Reload avatar URL if it changed
-            if let webView = avatarWebView,
-               loadedAvatarURL != appState.avatarURL {
-                webView.loadHTMLString(centeredIframeHTML(for: appState.avatarURL), baseURL: nil)
-                loadedAvatarURL = appState.avatarURL
-            }
-            updateAvatarVisibility()
             return existing
         }
 
-        let fullWidth = panelWidth()
-        let panelHeight: CGFloat = Self.panelHeight
-
         let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: fullWidth, height: panelHeight),
+            contentRect: NSRect(x: 0, y: 0, width: Self.promptWidth, height: Self.panelHeight),
             styleMask: [.nonactivatingPanel, .titled, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -398,36 +292,6 @@ class PanelManager {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
 
-        // Root container — transparent, holds avatar + prompt side by side
-        let rootContainer = NSView(frame: NSRect(x: 0, y: 0, width: fullWidth, height: panelHeight))
-        rootContainer.wantsLayer = true
-        rootContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        // --- Avatar container (left) ---
-        let avatarContainer = NSView()
-        avatarContainer.wantsLayer = true
-        avatarContainer.layer?.cornerRadius = 12
-        avatarContainer.layer?.masksToBounds = true
-        avatarContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        let webConfig = WKWebViewConfiguration()
-        let webView = NonInteractiveWebView(frame: .zero, configuration: webConfig)
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = .clear
-        webView.loadHTMLString(centeredIframeHTML(for: appState.avatarURL), baseURL: nil)
-        self.loadedAvatarURL = appState.avatarURL
-        avatarContainer.addSubview(webView)
-        NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: avatarContainer.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: avatarContainer.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: avatarContainer.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: avatarContainer.trailingAnchor),
-        ])
-        self.avatarWebView = webView
-        self.avatarContainer = avatarContainer
-
-        // --- Prompt visual effect (right) ---
         let visualEffect = NSVisualEffectView()
         visualEffect.state = .active
         visualEffect.material = .popover
@@ -452,42 +316,7 @@ class PanelManager {
             hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor),
         ])
 
-        // --- Layout: [avatar] - gap - [prompt] ---
-        rootContainer.addSubview(avatarContainer)
-        rootContainer.addSubview(visualEffect)
-
-        let avatarWidth = avatarContainer.widthAnchor.constraint(
-            equalToConstant: appState.showAvatarPanel ? appState.avatarPanelWidth : 0)
-        let gapConstraint = visualEffect.leadingAnchor.constraint(
-            equalTo: avatarContainer.trailingAnchor,
-            constant: appState.showAvatarPanel ? 6 : 0)
-        self.avatarWidthConstraint = avatarWidth
-        self.avatarGapConstraint = gapConstraint
-
-        NSLayoutConstraint.activate([
-            // Avatar: pinned left, full height
-            avatarContainer.topAnchor.constraint(equalTo: rootContainer.topAnchor),
-            avatarContainer.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
-            avatarContainer.leadingAnchor.constraint(equalTo: rootContainer.leadingAnchor),
-            avatarWidth,
-
-            // Prompt: pinned right, full height, gap from avatar
-            gapConstraint,
-            visualEffect.topAnchor.constraint(equalTo: rootContainer.topAnchor),
-            visualEffect.bottomAnchor.constraint(equalTo: rootContainer.bottomAnchor),
-            visualEffect.trailingAnchor.constraint(equalTo: rootContainer.trailingAnchor),
-        ])
-
-        avatarContainer.isHidden = !appState.showAvatarPanel
-
-        panel.contentView = rootContainer
-
-        // Observe showAvatarPanel changes
-        avatarObserver = appState.$showAvatarPanel
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.updateAvatarVisibility()
-            }
+        panel.contentView = visualEffect
 
         self.panel = panel
         return panel

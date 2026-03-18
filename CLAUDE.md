@@ -61,7 +61,7 @@ Key components in `GhostType/Core/`:
 
 Key UI components in `GhostType/UI/`:
 
-- **PromptPanelView** (`UI/PromptPanel/`): Main prompt input and streaming response view — largest Swift file (~40KB). Includes `MarkdownView` for rendered markdown responses and `AvatarView` for user/AI avatars.
+- **PromptPanelView** (`UI/PromptPanel/`): Main prompt input and streaming response view — largest Swift file (~40KB). Includes `MarkdownView` for rendered markdown responses.
 - **SettingsView** (`UI/Settings/`): App configuration UI for provider, model, and credentials.
 
 ### Key Python components (backend/)

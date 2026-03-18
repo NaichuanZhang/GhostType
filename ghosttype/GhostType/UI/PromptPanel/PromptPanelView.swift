@@ -259,11 +259,6 @@ struct PromptPanelView: View {
         HStack(alignment: .top) {
             if message.role == "user" { Spacer(minLength: 40) }
 
-            if message.role == "assistant" {
-                AvatarView(size: 20, isAnimating: false)
-                    .padding(.top, 2)
-            }
-
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
                 if message.role == "assistant" {
                     MarkdownView(text: message.content, isStreaming: false)
@@ -625,9 +620,6 @@ struct PromptPanelView: View {
             }
 
             HStack(alignment: .top, spacing: 8) {
-                AvatarView(size: 28, isAnimating: appState.isGenerating)
-                    .padding(.top, 8)
-
                 Group {
                     if appState.responseViewTab == .original && !appState.selectedContext.isEmpty && !hasConversationHistory {
                         Text(appState.selectedContext)
