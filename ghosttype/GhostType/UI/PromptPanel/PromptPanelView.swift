@@ -2,7 +2,7 @@ import SwiftUI
 import Cocoa
 import ApplicationServices
 
-/// The main floating panel view — prompt input + streaming response + action buttons.
+/// The main floating panel view — orchestrates sub-views and routes actions.
 struct PromptPanelView: View {
     @EnvironmentObject var appState: AppState
     @FocusState private var isPromptFocused: Bool
@@ -37,20 +37,21 @@ struct PromptPanelView: View {
 
             // Main prompt content
             VStack(spacing: 0) {
-                headerBar
+                HeaderBar(
+                    showHistorySidebar: $showHistorySidebar,
+                    onCancel: cancelGeneration,
+                    onNewConversation: startNewConversation
+                )
                 Divider()
 
-                // Scrollable content area — fills available space
+                // Scrollable content area
                 ScrollView {
                     VStack(spacing: 12) {
-                        // Conversation history (visible after first completed turn)
                         if hasConversationHistory {
-                            conversationHistory
+                            ConversationView()
                         }
-
-                        // Response area
                         if appState.isGenerating || !appState.responseText.isEmpty {
-                            responseArea
+                            ResponseArea()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -63,33 +64,42 @@ struct PromptPanelView: View {
                 // Pinned bottom input area
                 VStack(spacing: 8) {
                     if !appState.selectedContext.isEmpty && appState.conversationMessages.isEmpty {
-                        contextIndicator
+                        ContextIndicator()
                     }
 
                     if appState.isBrowserContextAttached {
-                        browserContextIndicator
+                        BrowserContextIndicator()
                     }
 
-                    // Screenshot preview (visible before first generation)
                     if appState.screenshotImage != nil && !hasConversationHistory {
-                        screenshotIndicator
+                        ScreenshotIndicator()
                     }
 
-                    // Error display
                     if let error = appState.errorMessage {
-                        errorBanner(error)
+                        ErrorBanner(message: error, onDismiss: { appState.errorMessage = nil })
                     }
 
-                    promptInput
+                    PromptInputBar(
+                        isPromptFocused: $isPromptFocused,
+                        intrinsicTextHeight: $intrinsicTextHeight,
+                        showMentionPopup: $showMentionPopup,
+                        onSubmit: submitPrompt,
+                        onAcceptMention: acceptMentionSuggestion
+                    )
 
-                    // Quick actions (only before any generation, first turn only)
                     if appState.responseText.isEmpty && !appState.isGenerating && !hasConversationHistory {
-                        quickActions
+                        QuickActions(onQuickAction: { prompt in
+                            appState.promptText = prompt
+                            submitPrompt()
+                        })
                     }
 
-                    // Action bar (when response is ready)
                     if !appState.responseText.isEmpty && !appState.isGenerating {
-                        actionBar
+                        ActionBar(
+                            onInsert: insertText,
+                            onCopy: copyText,
+                            onRetry: retry
+                        )
                     }
                 }
                 .padding(16)
@@ -102,10 +112,9 @@ struct PromptPanelView: View {
         .onAppear {
             isPromptFocused = true
             tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                // Tab key (keyCode 48) accepts @mention suggestion when popup is visible
                 if event.keyCode == 48, self.showMentionPopup {
                     self.acceptMentionSuggestion()
-                    return nil  // consume the event
+                    return nil
                 }
                 return event
             }
@@ -118,25 +127,20 @@ struct PromptPanelView: View {
         }
         .onChange(of: appState.isPromptVisible) { visible in
             if visible {
-                // Slight delay so this fires after PanelManager has made the
-                // window key — @FocusState requires key window status.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     isPromptFocused = true
                 }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .ghostTypeEnterPressed)) { _ in
-            // Guard against stale notification arriving after state changed
             guard !appState.responseText.isEmpty, !appState.isGenerating else { return }
             handleEnterKey()
         }
         .onReceive(NotificationCenter.default.publisher(for: .ghostTypeSubmitPressed)) { _ in
             if appState.isGenerating {
-                // Queue: auto-submit when generation completes
                 appState.pendingSubmit = true
                 NSLog("[GhostType][Submit] Cmd+Enter during generation — queued pending submit")
             } else {
-                // Archive any unarchived assistant response before submitting
                 archiveCurrentResponseIfNeeded()
                 submitPrompt()
             }
@@ -145,586 +149,20 @@ struct PromptPanelView: View {
             if !isGenerating && appState.pendingSubmit {
                 appState.pendingSubmit = false
                 NSLog("[GhostType][Submit] Generation complete — firing pending submit")
-                // Archive the just-completed response before submitting the queued prompt
                 archiveCurrentResponseIfNeeded()
                 submitPrompt()
             }
         }
     }
 
-    // MARK: - Header
+    // MARK: - @Mention
 
-    private var headerBar: some View {
-        HStack {
-            Image(systemName: "text.cursor")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("GhostType")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            // Backend status indicator
-            if appState.backendStatus == .running {
-                Circle()
-                    .fill(.green)
-                    .frame(width: 6, height: 6)
-            } else {
-                Circle()
-                    .fill(.orange)
-                    .frame(width: 6, height: 6)
-            }
-
-            // Mode indicator (after first turn)
-            if hasConversationHistory {
-                Text(appState.conversationMode == .chat ? "Chat" : "Draft")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-            }
-
-            // Agent picker (when agents are available)
-            if appState.availableAgents.count > 1 {
-                agentPicker
-            }
-
-            // History sidebar toggle
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showHistorySidebar.toggle()
-                }
-            }) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(showHistorySidebar ? .purple : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Session History")
-
-            Spacer()
-
-            if appState.isGenerating {
-                Button(action: cancelGeneration) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 8))
-                        Text("Stop")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            } else {
-                // New conversation button (visible after first turn)
-                if hasConversationHistory {
-                    Button(action: startNewConversation) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "plus.circle")
-                                .font(.system(size: 10))
-                            Text("New")
-                                .font(.system(size: 10, weight: .medium))
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 6)
-                }
-
-                Text("Esc to close")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: - Conversation History
-
-    private var conversationHistory: some View {
-        LazyVStack(spacing: 8) {
-            ForEach(appState.conversationMessages) { message in
-                conversationBubble(message)
-                    .id(message.id)
-            }
-        }
-        .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func conversationBubble(_ message: ConversationMessage) -> some View {
-        HStack(alignment: .top) {
-            if message.role == "user" { Spacer(minLength: 40) }
-
-            VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
-                if message.role == "assistant" {
-                    MarkdownView(text: message.content, isStreaming: false)
-                        .font(.system(size: 12))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(AnyShapeStyle(.quaternary.opacity(0.5)))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .transaction { $0.animation = nil }
-                } else {
-                    Text(message.content)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(AnyShapeStyle(.purple.opacity(0.8)))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-            }
-
-            if message.role == "assistant" { Spacer(minLength: 40) }
-        }
-        .padding(.horizontal, 8)
-    }
-
-    // MARK: - Prompt Input
-
-    private var promptEditorHeight: CGFloat {
-        let minH: CGFloat = 36   // ~1 line
-        let maxH: CGFloat = 200  // ~8 lines
-        return min(max(intrinsicTextHeight, minH), maxH)
-    }
-
-    private var promptInput: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14))
-                .foregroundStyle(.purple)
-                .padding(.top, 8)
-
-            ZStack(alignment: .topLeading) {
-                // Placeholder text
-                if appState.promptText.isEmpty {
-                    Text(promptPlaceholder)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                        .allowsHitTesting(false)
-                }
-
-                AutoGrowingTextView(
-                    text: $appState.promptText,
-                    intrinsicHeight: $intrinsicTextHeight,
-                    font: .systemFont(ofSize: 14),
-                    maxHeight: 200,
-                    isFocused: isPromptFocused
-                )
-                .frame(height: promptEditorHeight)
-            }
-            .animation(.easeInOut(duration: 0.15), value: promptEditorHeight)
-
-            // Submit button (visible when there's a prompt or selected context to act on)
-            if (!appState.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !appState.selectedContext.isEmpty)
-                && !appState.isGenerating {
-                Button(action: submitPrompt) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.purple)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 6)
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            if showMentionPopup {
-                mentionPopup
-                    .offset(y: -36)
-            }
-        }
-        .onChange(of: appState.promptText) { newValue in
-            showMentionPopup = newValue.hasSuffix("@")
-        }
-    }
-
-    private var promptPlaceholder: String {
-        if hasConversationHistory {
-            return appState.conversationMode == .chat
-                ? "Ask a follow-up..."
-                : "Refine the draft..."
-        }
-        return appState.selectedContext.isEmpty
-            ? "What do you want to write?"
-            : "How should this be rewritten? (Enter for default)"
-    }
-
-    // MARK: - Agent Picker
-
-    /// The display name for the currently effective agent.
-    private var effectiveAgentName: String {
-        let agentId = appState.effectiveAgentId()
-        return appState.availableAgents.first(where: { $0.id == agentId })?.name
-            ?? "Auto"
-    }
-
-    private var agentPicker: some View {
-        Menu {
-            // Auto option (clears manual selection)
-            Button(action: { appState.selectedAgentId = nil }) {
-                HStack {
-                    Text("Auto")
-                    if appState.selectedAgentId == nil {
-                        Image(systemName: "checkmark")
-                    }
-                }
-            }
-            Divider()
-            ForEach(appState.availableAgents) { agent in
-                Button(action: { appState.selectedAgentId = agent.id }) {
-                    HStack {
-                        Text(agent.name)
-                        if appState.selectedAgentId == agent.id {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "person.2.circle")
-                    .font(.system(size: 9))
-                Text(effectiveAgentName)
-                    .font(.system(size: 9, weight: .medium))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.quaternary.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    // MARK: - Context Indicator
-
-    private var contextIndicator: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "text.quote")
-                .font(.system(size: 10))
-            let contextPreview = appState.selectedContext.prefix(50)
-            Text("Selected: \(contextPreview)\(appState.selectedContext.count > 50 ? "..." : "")")
-                .font(.system(size: 11))
-                .lineLimit(1)
-            Spacer()
-            Button(action: {
-                appState.selectedContext = ""
-                appState.responseViewTab = .generated
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.plain)
-        }
-        .foregroundStyle(.secondary)
-        .padding(8)
-        .background(.quaternary.opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    // MARK: - @Mention Popup
-
-    /// Accept the @browser mention: strip trailing `@`, dismiss popup, fetch context.
     private func acceptMentionSuggestion() {
         if appState.promptText.hasSuffix("@") {
             appState.promptText = String(appState.promptText.dropLast())
         }
         showMentionPopup = false
         appState.fetchBrowserContext()
-    }
-
-    private var mentionPopup: some View {
-        Button(action: {
-            acceptMentionSuggestion()
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.blue)
-                Text("@browser")
-                    .font(.system(size: 12, weight: .medium))
-                Text("— active Chrome tab")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.ultraThickMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Browser Context Indicator
-
-    private var browserContextIndicator: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "globe")
-                .font(.system(size: 10))
-                .foregroundStyle(.blue)
-            let title = appState.browserContext?.title ?? "Browser page"
-            let truncatedTitle = title.count > 40 ? String(title.prefix(40)) + "..." : title
-            Text(truncatedTitle)
-                .font(.system(size: 11))
-                .lineLimit(1)
-            Spacer()
-            Button(action: {
-                appState.clearBrowserContext()
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.plain)
-        }
-        .foregroundStyle(.secondary)
-        .padding(8)
-        .background(Color.blue.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    // MARK: - Screenshot Indicator
-
-    private var screenshotIndicator: some View {
-        HStack(spacing: 8) {
-            if let nsImage = appState.screenshotImage {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                    )
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 10))
-                    Text("Screenshot captured")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                Text("Sent as visual context with your prompt")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer()
-            Button(action: {
-                appState.screenshotBase64 = nil
-                appState.screenshotImage = nil
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.plain)
-        }
-        .foregroundStyle(.secondary)
-        .padding(8)
-        .background(.quaternary.opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    // MARK: - Error Banner
-
-    private func errorBanner(_ message: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer()
-            Button(action: { appState.errorMessage = nil }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(8)
-        .background(.red.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    // MARK: - Quick Actions
-
-    private var quickActions: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                quickActionButton("Rewrite", icon: "arrow.triangle.2.circlepath", prompt: "Rewrite this text to be clearer and more professional")
-                quickActionButton("Fix Grammar", icon: "checkmark.circle", prompt: "Fix all grammar and spelling errors")
-                quickActionButton("Shorter", icon: "arrow.down.right.and.arrow.up.left", prompt: "Make this text more concise")
-                quickActionButton("Expand", icon: "arrow.up.left.and.arrow.down.right", prompt: "Expand on this text with more detail")
-                quickActionButton("Friendly", icon: "face.smiling", prompt: "Rewrite in a friendly, casual tone")
-                quickActionButton("Professional", icon: "briefcase", prompt: "Rewrite in a formal, professional tone")
-            }
-        }
-    }
-
-    private func quickActionButton(_ title: String, icon: String, prompt: String) -> some View {
-        Button(action: {
-            appState.promptText = prompt
-            submitPrompt()
-        }) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 10))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.quaternary.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .disabled(appState.selectedContext.isEmpty)
-        .opacity(appState.selectedContext.isEmpty ? 0.4 : 1.0)
-    }
-
-    // MARK: - Response Area
-
-    private var responseToggle: some View {
-        Picker("", selection: $appState.responseViewTab) {
-            Text("Generated").tag(ResponseViewTab.generated)
-            Text("Original").tag(ResponseViewTab.original)
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 200)
-    }
-
-    private var responseArea: some View {
-        VStack(spacing: 8) {
-            if !appState.selectedContext.isEmpty && (appState.isGenerating || !appState.responseText.isEmpty) && !hasConversationHistory {
-                responseToggle
-            }
-
-            // Tool call chips (visible when any tools have been invoked)
-            if !appState.activeToolCalls.isEmpty {
-                ToolCallsView(
-                    toolCalls: appState.activeToolCalls,
-                    isExpanded: $appState.isToolCallsExpanded
-                )
-            }
-
-            HStack(alignment: .top, spacing: 8) {
-                Group {
-                    if appState.responseViewTab == .original && !appState.selectedContext.isEmpty && !hasConversationHistory {
-                        Text(appState.selectedContext)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                    } else {
-                        MarkdownView(text: appState.responseText, isStreaming: appState.isGenerating)
-                            .padding(12)
-                    }
-                }
-                .background(.quaternary.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(alignment: .bottomTrailing) {
-                    if appState.isGenerating && appState.responseViewTab == .generated {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .padding(8)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Action Bar
-
-    private var hasContext: Bool {
-        !appState.selectedContext.isEmpty
-    }
-
-    private var actionBar: some View {
-        HStack(spacing: 8) {
-            // Insert/Replace — primary action in draft mode, secondary in chat
-            if appState.conversationMode == .draft {
-                Button(action: insertText) {
-                    HStack(spacing: 4) {
-                        Image(systemName: hasContext ? "arrow.triangle.2.circlepath" : "text.insert")
-                            .font(.system(size: 11))
-                        Text(hasContext ? "Replace" : "Insert")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.purple)
-                    .foregroundColor(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            }
-
-            Button(action: copyText) {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 11))
-                    Text("Copy")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(appState.conversationMode == .chat ? AnyShapeStyle(.purple) : AnyShapeStyle(.quaternary.opacity(0.5)))
-                .foregroundColor(appState.conversationMode == .chat ? .white : .primary)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-
-            Button(action: retry) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12))
-                    .padding(6)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-
-            // Insert button for chat mode (optional — for pasting an answer)
-            if appState.conversationMode == .chat {
-                Button(action: insertText) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "text.insert")
-                            .font(.system(size: 11))
-                        Text("Insert")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-            }
-
-            Spacer()
-
-            if appState.conversationMode == .draft {
-                Text(hasContext ? "Enter to replace · ⌘Enter to send" : "Enter to insert · ⌘Enter to send")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            } else {
-                Text("Enter to continue · ⌘Enter to send")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-        }
     }
 
     // MARK: - Actions
@@ -737,11 +175,9 @@ struct PromptPanelView: View {
 
         if !appState.responseText.isEmpty && !appState.isGenerating {
             if appState.conversationMode == .chat {
-                // Chat mode: Enter starts next turn instead of inserting
                 NSLog("[GhostType][Enter] Chat mode — completing turn, focusing prompt")
                 completeTurnAndPrepareNext()
             } else {
-                // Draft mode: Enter inserts text (existing behavior)
                 NSLog("[GhostType][Enter] Draft mode — routing to insertText()")
                 insertText()
             }
@@ -762,7 +198,6 @@ struct PromptPanelView: View {
               appState.conversationMessages.count,
               appState.conversationMode == .chat ? "chat" : "draft")
 
-        // Need either a prompt or selected context to proceed
         guard !trimmed.isEmpty || hasContext else {
             NSLog("[GhostType][Submit] BLOCKED — empty prompt and no context")
             return
@@ -772,22 +207,16 @@ struct PromptPanelView: View {
             return
         }
 
-        // When there's selected context but no specific prompt, default to rewrite
         let effectivePrompt = trimmed.isEmpty && hasContext
             ? "Rewrite this text to be clearer and more professional"
             : trimmed
 
-        // Determine mode based on prompt content
-        let mode = determineMode(prompt: effectivePrompt, hasContext: hasContext)
-
-        // Auto-detect conversation mode type
+        let mode = Self.determineMode(prompt: effectivePrompt, hasContext: hasContext)
         let modeType: ConversationMode = (hasContext || ["rewrite", "fix", "translate"].contains(mode)) ? .draft : .chat
         appState.conversationMode = modeType
 
-        // Save user message to conversation history
         appState.appendMessage(role: "user", content: effectivePrompt)
 
-        // Clear prompt and response for new generation
         appState.promptText = ""
         appState.responseText = ""
         appState.isGenerating = true
@@ -796,21 +225,35 @@ struct PromptPanelView: View {
         appState.activeToolCalls = []
         appState.isToolCallsExpanded = false
 
-        // Start token batching to reduce view updates during streaming
         appState.startTokenBatching()
 
         let modeTypeStr = modeType == .chat ? "chat" : "draft"
-        // Send screenshot only on first turn (most relevant context)
         let screenshot = appState.conversationMessages.count <= 1 ? appState.screenshotBase64 : nil
-
-        // Resolve which agent to use
         let agentId = appState.effectiveAgentId()
 
-        // Route generation through selected backend
-        if appState.backendStatus == .running {
-            NSLog("[GhostType][Submit] Using local backend: mode=%@, mode_type=%@, screenshot=%@, agent=%@, browserCtx=%@",
-                  mode, modeTypeStr, screenshot != nil ? "YES" : "NO", agentId ?? "default",
-                  appState.isBrowserContextAttached ? "YES" : "NO")
+        // Browser context text for subprocess
+        let browserCtxText = appState.isBrowserContextAttached ? appState.browserContext?.content : nil
+
+        NSLog("[GhostType][Submit] Generating: mode=%@, mode_type=%@, screenshot=%@, agent=%@, browserCtx=%@",
+              mode, modeTypeStr, screenshot != nil ? "YES" : "NO", agentId ?? "default",
+              appState.isBrowserContextAttached ? "YES" : "NO")
+
+        // Use subprocess (primary) or WebSocket (fallback) or StubAgent (no backend)
+        if appState.subprocess.isRunning || !appState.wsClient.backendAvailable {
+            // Primary: subprocess path
+            appState.generationService.generate(
+                prompt: effectivePrompt,
+                context: appState.selectedContext,
+                mode: mode,
+                modeType: modeTypeStr,
+                config: appState.modelConfigForRequest(),
+                screenshot: screenshot,
+                agent: agentId,
+                browserContext: browserCtxText,
+                appState: appState
+            )
+        } else if appState.backendStatus == .running {
+            // Legacy fallback: WebSocket
             generateWithBackend(prompt: effectivePrompt, context: appState.selectedContext, mode: mode, modeType: modeTypeStr, screenshot: screenshot, agent: agentId, includeBrowserContext: appState.isBrowserContextAttached)
         } else {
             NSLog("[GhostType][Submit] Backend unavailable, using StubAgent")
@@ -819,7 +262,7 @@ struct PromptPanelView: View {
     }
 
     /// Determines the generation mode based on prompt content.
-    private func determineMode(prompt: String, hasContext: Bool) -> String {
+    static func determineMode(prompt: String, hasContext: Bool) -> String {
         let lower = prompt.lowercased()
 
         if lower.contains("fix") || lower.contains("grammar") || lower.contains("spelling") {
@@ -840,9 +283,6 @@ struct PromptPanelView: View {
 
     // MARK: - Multi-Turn Helpers
 
-    /// Archives the current assistant response into conversationMessages if one exists.
-    /// Called before submitPrompt() in paths that bypass completeTurnAndPrepareNext()
-    /// (e.g. Cmd+Enter, pending submit) to prevent losing the previous response.
     private func archiveCurrentResponseIfNeeded() {
         guard !appState.responseText.isEmpty, !appState.isGenerating else { return }
         NSLog("[GhostType][MultiTurn] Archiving unarchived response (len=%d) before new submit",
@@ -851,18 +291,12 @@ struct PromptPanelView: View {
         appState.responseText = ""
     }
 
-    /// Saves the current response as an assistant message and prepares the prompt for the next turn.
-    /// If the user already typed a follow-up before pressing Enter, it is submitted automatically
-    /// so the conversation flows naturally without requiring a second Enter press.
     private func completeTurnAndPrepareNext() {
         NSLog("[GhostType][MultiTurn] completeTurnAndPrepareNext — promptLen=%d, responseLen=%d, msgCount=%d",
               appState.promptText.count, appState.responseText.count, appState.conversationMessages.count)
 
         if let pendingPrompt = appState.completeTurn() {
             NSLog("[GhostType][MultiTurn] Auto-submitting pending follow-up: '%@'", String(pendingPrompt.prefix(60)))
-            // Defer to next run loop tick — completeTurn() just mutated several
-            // @Published properties; submitting immediately cascades more state
-            // changes during the same view update, which can trigger layout loops.
             DispatchQueue.main.async { [self] in
                 appState.promptText = pendingPrompt
                 submitPrompt()
@@ -872,10 +306,10 @@ struct PromptPanelView: View {
         }
     }
 
-    /// Resets conversation and backend agent state.
     private func startNewConversation() {
         NSLog("[GhostType][NewConversation] Resetting conversation")
-        appState.wsClient.sendNewConversation()
+        appState.generationService.newConversation()
+        appState.wsClient.sendNewConversation()  // Legacy fallback
         appState.clearConversation()
         isPromptFocused = true
     }
@@ -884,12 +318,6 @@ struct PromptPanelView: View {
 
     private func generateWithBackend(prompt: String, context: String, mode: String, modeType: String, screenshot: String? = nil, agent: String? = nil, includeBrowserContext: Bool = false) {
         let wsClient = appState.wsClient
-
-        NSLog("[GhostType][Generate] generateWithBackend — mode=%@, modeType=%@, promptLen=%d, contextLen=%d, hasScreenshot=%@, wsConnected=%@, backendStatus=%@",
-              mode, modeType, prompt.count, context.count,
-              screenshot != nil ? "YES" : "NO",
-              wsClient.isConnected ? "YES" : "NO",
-              appState.backendStatus == .running ? "running" : "not-running")
 
         wsClient.onToken = { [weak appState] token in
             appState?.appendToken(token)
@@ -901,8 +329,6 @@ struct PromptPanelView: View {
             let streamedLen = appState?.responseText.count ?? 0
             NSLog("[GhostType][WS] Generation complete, response_len=%d, streamed_len=%d",
                   fullResponse.count, streamedLen)
-            // Safety: if no tokens were streamed (e.g. callback handler didn't
-            // propagate on agent reuse), use the full response from the done message.
             if appState?.responseText.isEmpty == true && !fullResponse.isEmpty {
                 NSLog("[GhostType][WS] No tokens streamed — using full response from done message")
                 appState?.responseText = fullResponse
@@ -939,8 +365,6 @@ struct PromptPanelView: View {
         wsClient.generate(prompt: prompt, context: context, mode: mode, modeType: modeType, config: config, screenshot: screenshot, agent: agent, includeBrowserContext: includeBrowserContext)
     }
 
-    // MARK: - Stub Fallback
-
     private func generateWithStub(prompt: String, context: String) {
         StubAgent.generate(prompt: prompt, context: context) { [weak appState] token in
             DispatchQueue.main.async {
@@ -960,7 +384,8 @@ struct PromptPanelView: View {
         NSLog("[GhostType][Cancel] Cancelling generation — responseLen=%d, msgCount=%d",
               appState.responseText.count, appState.conversationMessages.count)
         appState.stopTokenBatching()
-        appState.wsClient.cancelGeneration()
+        appState.generationService.cancel()
+        appState.wsClient.cancelGeneration()  // Legacy fallback
         appState.isGenerating = false
     }
 
@@ -971,117 +396,15 @@ struct PromptPanelView: View {
         let targetElement = appState.targetElement
         let hadSelectedContext = !appState.selectedContext.isEmpty
         let savedRange = appState.selectedTextRange
-        guard !text.isEmpty else {
-            NSLog("[GhostType][Insert] insertText called but responseText is empty, aborting")
-            return
-        }
 
-        NSLog("[GhostType][Insert] insertText called — text length: %d, savedElement: %@, replace: %@",
-              text.count, targetElement != nil ? "yes" : "nil",
-              hadSelectedContext ? "yes" : "no")
-
-        // Dismiss panel first — this deactivates GhostType and returns
-        // focus to the previous app, which is required for AX text insertion
-        dismissPanel()
-
-        if hadSelectedContext, let range = savedRange {
-            NSLog("[GhostType][Insert] Panel dismissed, starting replacement (range: %d+%d)",
-                  range.location, range.length)
-            attemptReplacement(text: text, targetElement: targetElement, range: range, attempt: 1)
-        } else {
-            NSLog("[GhostType][Insert] Panel dismissed, starting insertion")
-            attemptInsertion(text: text, targetElement: targetElement, attempt: 1)
-        }
-    }
-
-    private func attemptInsertion(text: String, targetElement: AXUIElement?, attempt: Int) {
-        // Web-based apps (Chrome, VSCode, Brave, etc.): AX returns success but
-        // silently drops text. Skip retries and paste directly after a brief
-        // delay for the target app to regain focus.
-        if let bid = appState.targetBundleID, Self.isWebBasedApp(bid) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
-                NSLog("[GhostType][Insert] Web app (%@), using simulatePaste", bid)
-                AccessibilityEngine.simulatePaste(text)
-            }
-            return
-        }
-
-        let delays: [Double] = [0.15, 0.30, 0.50]
-        guard attempt <= delays.count else {
-            NSLog("[GhostType][Insert] AX exhausted after %d attempts. Trying direct paste.", delays.count)
-            AccessibilityEngine.simulatePaste(text)
-            return
-        }
-
-        let delay = delays[attempt - 1]
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
-            do {
-                // Strategy 1: AX insert into saved element (works for native apps like Notes/TextEdit)
-                if let element = targetElement {
-                    do {
-                        try AccessibilityEngine.insertText(text, into: element)
-                        NSLog("[GhostType][Insert] Success on attempt %d (delay: %.2fs) via saved element", attempt, delay)
-                        return
-                    } catch {
-                        NSLog("[GhostType][Insert] Saved element AX failed, trying system-wide (attempt %d)", attempt)
-                    }
-                }
-                // Strategy 2: System-wide query → AX insert or simulatePaste fallback
-                // (handles Chrome/Electron once the app has regained focus)
-                try AccessibilityEngine.insertText(text)
-                NSLog("[GhostType][Insert] Success on attempt %d (delay: %.2fs) via system query", attempt, delay)
-            } catch {
-                NSLog("[GhostType][Insert] Attempt %d failed (delay: %.2fs): %@",
-                      attempt, delay, error.localizedDescription)
-                self.attemptInsertion(text: text, targetElement: targetElement, attempt: attempt + 1)
-            }
-        }
-    }
-
-    /// Attempts to replace the originally-selected text by restoring the saved selection range
-    /// then setting the selected text. Falls back to simulatePaste.
-    private func attemptReplacement(text: String, targetElement: AXUIElement?, range: CFRange, attempt: Int) {
-        // Web-based apps: AX range restore doesn't work; paste directly
-        if let bid = appState.targetBundleID, Self.isWebBasedApp(bid) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
-                NSLog("[GhostType][Replace] Web app (%@), using simulatePaste", bid)
-                AccessibilityEngine.simulatePaste(text)
-            }
-            return
-        }
-
-        let delays: [Double] = [0.15, 0.30, 0.50]
-        guard attempt <= delays.count else {
-            NSLog("[GhostType][Replace] All attempts exhausted, falling back to simulatePaste")
-            AccessibilityEngine.simulatePaste(text)
-            return
-        }
-
-        let delay = delays[attempt - 1]
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
-            if let element = targetElement,
-               AccessibilityEngine.replaceTextInRange(range, with: text, on: element) {
-                NSLog("[GhostType][Replace] Success on attempt %d (delay: %.2fs)", attempt, delay)
-                return
-            }
-            NSLog("[GhostType][Replace] Attempt %d failed (delay: %.2fs)", attempt, delay)
-            self.attemptReplacement(text: text, targetElement: targetElement, range: range, attempt: attempt + 1)
-        }
-    }
-
-    /// Returns true for apps where AX text insertion silently fails (Chrome, Electron, etc.).
-    static func isWebBasedApp(_ bundleID: String) -> Bool {
-        bundleID.hasPrefix("com.google.Chrome") ||
-        bundleID.hasPrefix("com.microsoft.VSCode") ||
-        bundleID.hasPrefix("com.brave.Browser") ||
-        bundleID.hasPrefix("com.operasoftware.Opera") ||
-        bundleID.hasPrefix("com.tinyspeck.slackmacgap") ||
-        bundleID.hasPrefix("com.hnc.Discord") ||
-        bundleID.hasPrefix("com.microsoft.teams") ||
-        bundleID.hasPrefix("notion.id") ||
-        bundleID.hasPrefix("com.figma.Desktop") ||
-        bundleID.hasPrefix("com.linear") ||
-        bundleID.contains(".electron.")
+        TextInsertionService.insert(
+            text: text,
+            targetElement: targetElement,
+            targetBundleID: appState.targetBundleID,
+            selectedTextRange: savedRange,
+            hasSelectedContext: hadSelectedContext,
+            dismissPanel: dismissPanel
+        )
     }
 
     private func copyText() {
@@ -1099,6 +422,12 @@ struct PromptPanelView: View {
         appState.isPromptVisible = false
         appState.clearConversation()
         NotificationCenter.default.post(name: .ghostTypeDismissPanel, object: nil)
+    }
+
+    // MARK: - Web App Detection (kept as static for PanelManager compatibility)
+
+    static func isWebBasedApp(_ bundleID: String) -> Bool {
+        TextInsertionService.isWebBasedApp(bundleID)
     }
 }
 

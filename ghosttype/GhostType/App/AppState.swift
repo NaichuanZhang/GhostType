@@ -177,7 +177,13 @@ class AppState: ObservableObject {
     /// NSImage of the captured screenshot for UI thumbnail preview.
     @Published var screenshotImage: NSImage?
 
-    /// WebSocket client for backend communication.
+    /// Subprocess manager for Python backend communication.
+    let subprocess = SubprocessManager()
+
+    /// Generation service for AI text generation.
+    lazy var generationService = GenerationService(subprocess: subprocess)
+
+    /// Legacy WebSocket client — kept for compatibility during migration.
     let wsClient = WebSocketClient()
 
     private var cancellables = Set<AnyCancellable>()
@@ -454,6 +460,13 @@ class AppState: ObservableObject {
 
         // Sync history to backend agent
         let simplifiedMessages = allMessages.map { ["role": $0.role, "content": $0.content] }
+        generationService.restoreHistory(
+            messages: simplifiedMessages,
+            config: modelConfigForRequest(),
+            modeType: session.mode == "chat" ? "chat" : "draft",
+            agent: session.agentId
+        )
+        // Legacy WebSocket fallback
         wsClient.sendRestoreHistory(
             messages: simplifiedMessages,
             config: modelConfigForRequest(),

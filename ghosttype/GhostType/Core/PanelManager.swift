@@ -148,7 +148,8 @@ class PanelManager {
             } else {
                 self.appState.clearConversation()
                 // Reset backend agent history for fresh conversation
-                self.appState.wsClient.sendNewConversation()
+                self.appState.generationService.newConversation()
+                self.appState.wsClient.sendNewConversation()  // Legacy fallback
             }
 
             // Set context AFTER resume/clear decision (clearConversation resets selectedContext)

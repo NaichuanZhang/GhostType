@@ -41,23 +41,34 @@ swift test  # from project root
 
 ## Architecture
 
-Two-process architecture: native Swift menu bar app + Python FastAPI backend, connected via WebSocket on `localhost:8420`.
+Two-process architecture: native Swift menu bar app + Python backend. The primary communication path is **stdio pipes** (Swift launches Python as a managed subprocess). A legacy WebSocket path (`server.py` on `localhost:8420`) is kept as fallback.
 
-### Data flow
+### Data flow (stdio subprocess — primary)
 
 ```
 Ctrl+K → HotkeyManager → PanelManager.show() → AccessibilityEngine.getCursorInfo()
-  → Panel at cursor → User types → WebSocketClient.generate()
-  → FastAPI /generate WS → AgentRegistry resolves agent → Strands Agent (thread pool) → LLM API
-  → StreamingCallbackHandler sends tokens via WS → PromptPanelView renders
-  → Insert → AccessibilityEngine.insertText() (AX API, fallback Cmd+V paste)
+  → Panel at cursor → User types → GenerationService.generate()
+  → SubprocessManager writes JSON line to Python stdin
+  → Python stdio_server.py: Strands Agent runs → streams tokens to stdout
+  → SubprocessManager reads stdout lines → AppState.appendToken() → UI renders
+  → Insert → TextInsertionService → AccessibilityEngine.insertText() (AX API, fallback Cmd+V paste)
+```
+
+### Data flow (WebSocket — legacy fallback)
+
+```
+Ctrl+K → HotkeyManager → PanelManager → WebSocketClient.generate()
+  → FastAPI /generate WS → Strands Agent → StreamingCallbackHandler → tokens via WS
+  → PromptPanelView renders → Insert → AccessibilityEngine.insertText()
 ```
 
 ### Backend (`backend/`)
 
 **Agent system** — agents are defined declaratively in `agents/agents.yaml`, loaded by `AgentRegistry` into immutable `AgentDefinition` snapshots. Each agent specifies a system prompt file, tool list, MCP servers, supported modes, and optional `app_mappings` for auto-selection by active app bundle ID. The `ToolRegistry` maps tool name strings to `@tool` function objects.
 
-**Server** (`server.py`): FastAPI with `/generate` WebSocket, `/health` GET, `/agents` GET. `StreamingCallbackHandler` bridges Strands' sync callbacks to async WebSocket — agent runs in thread pool via `asyncio.to_thread`, tokens sent with `asyncio.run_coroutine_threadsafe`. Concurrent cancel listener reads WebSocket during generation so cancellation isn't blocked by long responses. 120s generation timeout.
+**Stdio server** (`stdio_server.py`): Primary backend entry point. Reads JSON lines from stdin, writes events to stdout. `StdioCallbackHandler` writes tokens directly to stdout (no async bridging needed). Agent runs in a thread with 120s timeout. Much simpler than the WebSocket path (~200 lines vs ~800).
+
+**Legacy server** (`server.py`): FastAPI with `/generate` WebSocket, `/health` GET, `/agents` GET. `StreamingCallbackHandler` bridges Strands' sync callbacks to async WebSocket. Kept as fallback.
 
 **Agent lifecycle** (`agent.py`): One agent per WebSocket connection (enables multi-turn). Agent is recreated when config, mode type, or agent ID changes; otherwise reused (preserves conversation history). `ModelConfig` dataclass merges per-request config with env var defaults. Memory context is injected into system prompt on agent creation.
 
@@ -82,13 +93,18 @@ SPM package split into `GhostTypeLib` (library) and `GhostType` (executable in `
 - `AccessibilityEngine` — AX API: cursor position, selected text, text insertion
 - `FloatingPanel` — `NSPanel` subclass, non-activating (`.nonactivatingPanel`), resizable, no title bar buttons. Default 480x640, min 380x300, max 1200x900.
 - `PanelManager` — creates/positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left), key event monitoring (Escape dismiss, Cmd+Enter submit)
-- `WebSocketClient` — `URLSessionWebSocketTask`, health poll every 10s, auto-reconnect
-- `AgentService` — fetches agent definitions from `GET /agents`
+- `WebSocketClient` — legacy `URLSessionWebSocketTask`, health poll every 10s, auto-reconnect (fallback path)
+- `AgentService` — fetches agent definitions from `GET /agents` (legacy)
 - `SessionStore` — persists conversations as JSON at `~/.config/ghosttype/sessions/`
-- `BrowserContextService` — fetches browser context from `GET /browser-context`
+- `BrowserContextService` — fetches browser context from `GET /browser-context` (legacy)
+
+**Services** (`Services/`):
+- `SubprocessManager` — manages Python subprocess via stdin/stdout JSON lines (primary backend communication)
+- `GenerationService` — orchestrates AI generation via SubprocessManager, streams events to AppState
+- `TextInsertionService` — handles text insertion into target app via AX API or simulated paste
 
 **UI** (`UI/`):
-- `PromptPanelView` (~1100 lines) — main prompt input and streaming response view. Largest Swift file.
+- `PromptPanelView` (~300 lines) — main prompt panel orchestrator. Decomposed into sub-views: `HeaderBar`, `ConversationView`, `ResponseArea`, `PromptInputBar`, `ActionBar`, `ContextIndicators`.
 - `AutoGrowingTextView` — `NSTextView` wrapped for SwiftUI, grows vertically as text is entered. Handles Shift+Enter (newline) vs Enter (submit).
 - `MarkdownView` — rendered markdown responses with syntax highlighting (Highlightr).
 - `HistorySidebarView`/`SessionDetailView` — session history browser.
@@ -103,7 +119,9 @@ Manifest V3 extension that captures active tab content and POSTs it to the backe
 
 ### Communication Protocol
 
-WebSocket: `ws://127.0.0.1:8420/generate`. Health: `GET /health`. Agents: `GET /agents`. Browser context: `POST /browser-context`, `GET /browser-context`.
+**Primary (stdio)**: Swift launches `stdio_server.py` as a subprocess. Line-delimited JSON on stdin/stdout.
+
+**Legacy (WebSocket)**: `ws://127.0.0.1:8420/generate`. Health: `GET /health`. Agents: `GET /agents`. Browser context: `POST /browser-context`, `GET /browser-context`.
 
 Client → Server:
 ```json
@@ -131,7 +149,8 @@ Server → Client:
 - **Static panel sizing**: The panel is a fixed 480x640 GPT-style chat window (user-resizable). `AppState.panelWidth` is a `let` constant — no dynamic resize based on content. Content scrolls within the panel instead of the panel growing. This eliminates the `intrinsicContentSize` deadlock that occurred when `resizePanelToFit()` triggered SwiftUI layout during token streaming.
 - **Text insertion dual strategy**: AX API direct set preferred, simulated Cmd+V paste as fallback. Web apps (Chrome/Electron) skip AX retries and paste directly.
 - **Coordinate conversion**: AX API uses top-left origin, NSWindow uses bottom-left. Formula: `cocoaY = primaryScreen.frame.height - cgY`.
-- **Thread bridging**: `StreamingCallbackHandler` runs in a worker thread, schedules async sends via `asyncio.run_coroutine_threadsafe`. Cancellation is checked on every callback.
+- **Thread bridging (stdio)**: `StdioCallbackHandler` writes directly to stdout from the agent thread — no async bridging needed. Thread-safe via `_stdout_lock`.
+- **Thread bridging (legacy WebSocket)**: `StreamingCallbackHandler` runs in a worker thread, schedules async sends via `asyncio.run_coroutine_threadsafe`. Cancellation is checked on every callback.
 - **StubAgent fallback**: When backend is unavailable, the frontend falls back to `StubAgent` for simulated responses.
 - **Agent reuse**: The agent is preserved across turns within a WebSocket connection. Only recreated when config/mode/agent changes. `AppState.targetElement` must not be cleared until after insertion completes.
 - **Immutable data**: `AgentDefinition`, `AgentRegistrySnapshot`, `ModelConfig` are frozen/immutable dataclasses. Config is loaded once at module level.
