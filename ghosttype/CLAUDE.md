@@ -8,120 +8,80 @@ GhostType is a native macOS AI writing assistant. Press Ctrl+K anywhere on the s
 
 ## Build & Run
 
-### Backend (Python >=3.10)
+### Backend (Python >=3.10, managed by uv)
 
 ```bash
-# First-time setup + run
-./scripts/start-backend.sh
-
-# Or manually:
-cd backend && python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-python server.py  # starts on http://127.0.0.1:8420
+cd backend && uv sync --group dev  # first-time setup
+# Backend launches automatically as a subprocess when the Swift app starts.
 ```
 
-### Frontend (Swift, no Xcode IDE required)
+### Frontend (Swift 5.9, SPM, no Xcode IDE required)
 
 ```bash
-cd ghosttype  # project root with Package.swift
-./scripts/run.sh  # builds SPM, creates .app bundle, launches
+./scripts/run.sh  # builds SPM, creates .app bundle, launches (backend starts automatically)
 ```
 
 ### Tests
 
 ```bash
-# Backend (pytest, asyncio_mode=auto — no @pytest.mark.asyncio needed)
-cd backend && source .venv/bin/activate
-python -m pytest tests/ -v
-python -m pytest tests/test_server.py::TestStreamingCallbackHandler::test_token_streaming -v
+# Backend
+cd backend
+uv run --group dev python -m pytest tests/ -v                    # all tests
+uv run --group dev python -m pytest tests/test_stdio_server.py -v  # one file
+uv run --group dev python -m pytest tests/test_stdio_server.py::TestStdioCallbackHandler::test_token_streaming -v  # one test
 
-# Frontend (swift-testing 6.0)
+# Frontend (swift-testing 6.0 framework)
 swift test  # from project root
 ```
 
+pytest is configured with `asyncio_mode = "auto"` — async test functions work without `@pytest.mark.asyncio`.
+
 ## Architecture
 
-Two-process architecture: native Swift menu bar app + Python backend. The primary communication path is **stdio pipes** (Swift launches Python as a managed subprocess). A legacy WebSocket path (`server.py` on `localhost:8420`) is kept as fallback.
+Two-process architecture: native Swift menu bar app + Python backend connected via **stdio pipes** (Swift launches Python as a managed subprocess via `uv run`). A minimal HTTP server on port 8420 handles Chrome extension browser context only.
 
-### Data flow (stdio subprocess — primary)
+### Data flow
 
 ```
 Ctrl+K → HotkeyManager → PanelManager.show() → AccessibilityEngine.getCursorInfo()
   → Panel at cursor → User types → GenerationService.generate()
   → SubprocessManager writes JSON line to Python stdin
-  → Python stdio_server.py: Strands Agent runs → streams tokens to stdout
+  → stdio_server.py: Strands Agent runs → streams tokens to stdout
   → SubprocessManager reads stdout lines → AppState.appendToken() → UI renders
   → Insert → TextInsertionService → AccessibilityEngine.insertText() (AX API, fallback Cmd+V paste)
 ```
 
-### Data flow (WebSocket — legacy fallback)
-
-```
-Ctrl+K → HotkeyManager → PanelManager → WebSocketClient.generate()
-  → FastAPI /generate WS → Strands Agent → StreamingCallbackHandler → tokens via WS
-  → PromptPanelView renders → Insert → AccessibilityEngine.insertText()
-```
-
 ### Backend (`backend/`)
 
-**Agent system** — agents are defined declaratively in `agents/agents.yaml`, loaded by `AgentRegistry` into immutable `AgentDefinition` snapshots. Each agent specifies a system prompt file, tool list, MCP servers, supported modes, and optional `app_mappings` for auto-selection by active app bundle ID. The `ToolRegistry` maps tool name strings to `@tool` function objects.
+`stdio_server.py` is the sole entry point. Reads JSON lines from stdin, writes events to stdout. `StdioCallbackHandler` writes tokens directly from the agent thread (thread-safe via `_stdout_lock`). Agent runs in a thread with 120s timeout. Also spawns a minimal `http.server` thread on port 8420 for Chrome extension browser context.
 
-**Stdio server** (`stdio_server.py`): Primary backend entry point. Reads JSON lines from stdin, writes events to stdout. `StdioCallbackHandler` writes tokens directly to stdout (no async bridging needed). Agent runs in a thread with 120s timeout. Much simpler than the WebSocket path (~200 lines vs ~800).
+**Agent system**: Agents are defined declaratively in `agents/agents.yaml`, loaded by `AgentRegistry` into immutable `AgentDefinition` snapshots. Each agent specifies a system prompt file (in `prompts/`), tool list, MCP servers, supported modes, and optional `app_mappings` for auto-selection by active app bundle ID. Three agents: `general` (default), `coding`, `email`. `ToolRegistry` maps tool name strings to `@tool` function objects.
 
-**Legacy server** (`server.py`): FastAPI with `/generate` WebSocket, `/health` GET, `/agents` GET. `StreamingCallbackHandler` bridges Strands' sync callbacks to async WebSocket. Kept as fallback.
-
-**Agent lifecycle** (`agent.py`): One agent per WebSocket connection (enables multi-turn). Agent is recreated when config, mode type, or agent ID changes; otherwise reused (preserves conversation history). `ModelConfig` dataclass merges per-request config with env var defaults. Memory context is injected into system prompt on agent creation.
+**Agent lifecycle** (`agent.py`): One agent per subprocess session (enables multi-turn). Agent is recreated when config, mode type, or agent ID changes; otherwise reused (preserves conversation history). `ModelConfig` dataclass merges per-request config with env var defaults.
 
 **Mode types**: "draft" (writing/editing — restrictive prompt, raw text output) vs "chat" (conversational — relaxed prompt, markdown). Auto-classified from request mode and context presence, or client can specify `mode_type` explicitly.
 
-**Memory** (`tools/memory_tools.py`): Persistent JSON file at `~/.config/ghosttype/memories.json`. Memories are injected into system prompt via `build_memory_context()`. Memory tools (`save_memory`, `recall_memories`, `forget_memory`) are always available regardless of agent definition.
+**Memory** (`tools/memory_tools.py`): Persistent JSON at `~/.config/ghosttype/memories.json`. Injected into system prompt on agent creation. Memory tools (`save_memory`, `recall_memories`, `forget_memory`) are always available regardless of agent definition.
 
-**Browser context** (`browser_context.py`): `BrowserContext` (frozen dataclass) + thread-safe `BrowserContextStore`. The Chrome extension POSTs page content to `POST /browser-context`; the frontend reads it via `GET /browser-context`. During generation, if the client sends `"include_browser_context": true`, the server injects the stored page content (truncated to 10K chars) into the agent prompt via `build_message()`.
-
-**MCP** (`mcp_manager.py`): Loads server definitions from `mcp_config.json`. Creates fresh `MCPClient` instances per agent — the Strands Agent manages subprocess lifecycle internally. Agents can specify which MCP servers they need via `mcp_servers` in their definition.
+**Browser context** (`browser_context.py`): Chrome extension POSTs page content to `POST /browser-context`; during generation, if client sends `"include_browser_context": true`, stored page content (truncated to 10K chars) is injected into the agent prompt.
 
 ### Frontend (`GhostType/`)
 
-SPM package split into `GhostTypeLib` (library) and `GhostType` (executable in `GhostTypeMain/`). Uses `main.swift` with manual `NSApplication` bootstrap (not `@main`) because SwiftUI `@main` requires Xcode-managed bundles.
+SPM package split into `GhostTypeLib` (library at `GhostType/`) and `GhostType` (executable at `GhostTypeMain/`). Uses `main.swift` with manual `NSApplication` bootstrap (not `@main`) because SwiftUI `@main` requires Xcode-managed bundles.
 
-**App** (`App/`):
-- `AppState` — single `ObservableObject`, shared via `@EnvironmentObject`. Holds all UI state, WebSocket client, session store, agent service, and settings.
-- `AppDelegate` — `NSApplicationDelegate` handling app lifecycle, dock icon hiding, menu bar setup.
+`AppState` is the single `ObservableObject` shared via `@EnvironmentObject`. Split into extensions: `AppState+Generation.swift` (token batching, tool calls) and `AppState+Session.swift` (persistence, resume).
 
-**Core** (`Core/`):
-- `HotkeyManager` — global Ctrl+K via `CGEventTap` (intercepts and consumes)
-- `AccessibilityEngine` — AX API: cursor position, selected text, text insertion
-- `FloatingPanel` — `NSPanel` subclass, non-activating (`.nonactivatingPanel`), resizable, no title bar buttons. Default 480x640, min 380x300, max 1200x900.
-- `PanelManager` — creates/positions panel, handles coordinate conversion (AX top-left vs NSWindow bottom-left), key event monitoring (Escape dismiss, Cmd+Enter submit)
-- `WebSocketClient` — legacy `URLSessionWebSocketTask`, health poll every 10s, auto-reconnect (fallback path)
-- `AgentService` — fetches agent definitions from `GET /agents` (legacy)
-- `SessionStore` — persists conversations as JSON at `~/.config/ghosttype/sessions/`
-- `BrowserContextService` — fetches browser context from `GET /browser-context` (legacy)
+Key services: `SubprocessManager` (launches Python via `uv run`, stdin/stdout JSON pipes), `GenerationService` (orchestrates generation, errors if subprocess unavailable), `ModeDetector` (classifies prompt intent), `TextInsertionService` (AX API + paste fallback).
 
-**Services** (`Services/`):
-- `SubprocessManager` — manages Python subprocess via stdin/stdout JSON lines (primary backend communication)
-- `GenerationService` — orchestrates AI generation via SubprocessManager, streams events to AppState
-- `TextInsertionService` — handles text insertion into target app via AX API or simulated paste
-
-**UI** (`UI/`):
-- `PromptPanelView` (~300 lines) — main prompt panel orchestrator. Decomposed into sub-views: `HeaderBar`, `ConversationView`, `ResponseArea`, `PromptInputBar`, `ActionBar`, `ContextIndicators`.
-- `AutoGrowingTextView` — `NSTextView` wrapped for SwiftUI, grows vertically as text is entered. Handles Shift+Enter (newline) vs Enter (submit).
-- `MarkdownView` — rendered markdown responses with syntax highlighting (Highlightr).
-- `HistorySidebarView`/`SessionDetailView` — session history browser.
-
-**Models** (`Models/`):
-- `AgentInfo` — agent definition from backend, includes `agentForBundle()` for auto-selection
-- `Session`/`SessionMessage` — conversation persistence model
+Dependency injection via protocols in `Core/Protocols.swift`: `AccessibilityProvider`, `SubprocessProvider`, `SessionStorage`.
 
 ### Chrome Extension (`chrome-extension/`)
 
-Manifest V3 extension that captures active tab content and POSTs it to the backend's `/browser-context` endpoint. `content.js` extracts page text on navigation; `background.js` relays it to the backend. The popup (`popup.html`/`popup.js`) shows connection status. Load as an unpacked extension in `chrome://extensions`.
+Manifest V3 extension that captures active tab content and POSTs to `/browser-context` on port 8420. Load as unpacked extension in `chrome://extensions`.
 
 ### Communication Protocol
 
-**Primary (stdio)**: Swift launches `stdio_server.py` as a subprocess. Line-delimited JSON on stdin/stdout.
-
-**Legacy (WebSocket)**: `ws://127.0.0.1:8420/generate`. Health: `GET /health`. Agents: `GET /agents`. Browser context: `POST /browser-context`, `GET /browser-context`.
+**Stdio (primary)**: Line-delimited JSON on stdin/stdout.
 
 Client → Server:
 ```json
@@ -134,30 +94,24 @@ Client → Server:
 
 Server → Client:
 ```json
-{"type": "token", "content": "word"}
-{"type": "tool_start", "tool_name": "...", "tool_id": "..."}
-{"type": "tool_done", "tool_name": "...", "tool_id": "...", "tool_input": "..."}
-{"type": "done", "content": "full response"}
-{"type": "error", "content": "message"}
-{"type": "cancelled"}
-{"type": "conversation_reset"}
+{"type": "token|tool_start|tool_done|done|error|cancelled|conversation_reset", ...}
 ```
+
+**HTTP (Chrome extension only)**: `POST /browser-context`, `GET /browser-context`, `GET /health` on port 8420.
 
 ## Important Patterns
 
-- **Non-activating panel**: The `NSPanel` must remain non-activating — stealing focus from the target app breaks AX text insertion. Never change the `.nonactivatingPanel` style mask. Title bar buttons are hidden; the panel is dismissed via Escape.
-- **Static panel sizing**: The panel is a fixed 480x640 GPT-style chat window (user-resizable). `AppState.panelWidth` is a `let` constant — no dynamic resize based on content. Content scrolls within the panel instead of the panel growing. This eliminates the `intrinsicContentSize` deadlock that occurred when `resizePanelToFit()` triggered SwiftUI layout during token streaming.
-- **Text insertion dual strategy**: AX API direct set preferred, simulated Cmd+V paste as fallback. Web apps (Chrome/Electron) skip AX retries and paste directly.
+- **Non-activating panel**: `NSPanel` must keep `.nonactivatingPanel` style — stealing focus breaks AX text insertion. Title bar buttons hidden; dismiss via Escape.
+- **Static panel sizing**: Fixed 480x640, user-resizable. `AppState.panelWidth` is a `let` constant — no dynamic resize. Content scrolls. This avoids `intrinsicContentSize` deadlock during token streaming.
+- **Text insertion dual strategy**: AX API direct set preferred, simulated Cmd+V paste fallback. Web apps (Chrome/Electron) skip AX retries and paste directly.
 - **Coordinate conversion**: AX API uses top-left origin, NSWindow uses bottom-left. Formula: `cocoaY = primaryScreen.frame.height - cgY`.
-- **Thread bridging (stdio)**: `StdioCallbackHandler` writes directly to stdout from the agent thread — no async bridging needed. Thread-safe via `_stdout_lock`.
-- **Thread bridging (legacy WebSocket)**: `StreamingCallbackHandler` runs in a worker thread, schedules async sends via `asyncio.run_coroutine_threadsafe`. Cancellation is checked on every callback.
-- **StubAgent fallback**: When backend is unavailable, the frontend falls back to `StubAgent` for simulated responses.
-- **Agent reuse**: The agent is preserved across turns within a WebSocket connection. Only recreated when config/mode/agent changes. `AppState.targetElement` must not be cleared until after insertion completes.
+- **Action triggers**: Key events (Enter, Cmd+Enter, Escape) route from `PanelManager` to `PromptPanelView` via `@Published` UInt counters on AppState (`enterAction`, `submitAction`, `dismissAction`).
+- **@Published animation guard**: `AppState` properties that trigger animations use `didSet` guards (not `willSet`) to prevent initial `@Published` emission from breaking animations on view appear.
 - **Immutable data**: `AgentDefinition`, `AgentRegistrySnapshot`, `ModelConfig` are frozen/immutable dataclasses. Config is loaded once at module level.
-- **Memory always available**: Memory tools are appended to every agent's tool list regardless of what `agents.yaml` specifies.
-- **Accessibility permission**: Required for AX APIs. Without it, APIs silently return nil.
-- **Keyboard shortcuts**: Enter submits prompt, Shift+Enter inserts newline, Cmd+Enter queues a submit during active generation (fires automatically when generation completes), Escape dismisses panel.
-- **@Published animation guard**: `AppState` properties that trigger animations use `didSet` guards (not `willSet`) to prevent initial `@Published` emission from breaking animations on view appear. See commit `d79bd40`.
+- **targetElement lifecycle**: `AppState.targetElement` (AX reference captured at panel-open) must not be cleared until after text insertion completes.
+- **Keyboard shortcuts**: Enter = submit, Shift+Enter = newline, Cmd+Enter = queue submit during active generation, Escape = dismiss.
+- **Accessibility permission**: Required for AX APIs. Without it, APIs silently return nil (no error thrown).
+- **Bedrock-only provider**: `create_model()` currently only implements the `bedrock` provider path.
 
 ## Configuration
 
@@ -172,9 +126,3 @@ Env vars serve as defaults; the frontend Settings UI overrides per-request. Pers
 | `GHOSTTYPE_MAX_TOKENS` | `2048` | Max generation tokens |
 | `GHOSTTYPE_TEMPERATURE` | `0.7` | Generation temperature |
 | `GHOSTTYPE_LOG_LEVEL` | `DEBUG` | Python logging level |
-
-## Known Limitations
-
-- **Chrome/Electron caret position**: No macOS API can get precise caret position from Chrome. Panel falls back to window-corner positioning.
-- **Single hotkey**: Ctrl+K is hardcoded; no UI for remapping.
-- **Bedrock-only provider**: `create_model()` currently only implements the `bedrock` provider path.

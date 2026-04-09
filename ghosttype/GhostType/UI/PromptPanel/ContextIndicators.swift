@@ -104,10 +104,11 @@ struct ScreenshotIndicator: View {
     }
 }
 
-/// Error banner display.
+/// Error banner with dismiss and optional retry.
 struct ErrorBanner: View {
     let message: String
     let onDismiss: () -> Void
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 6) {
@@ -119,6 +120,18 @@ struct ErrorBanner: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer()
+            if let onRetry = onRetry {
+                Button(action: onRetry) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 9))
+                        Text("Retry")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+            }
             Button(action: onDismiss) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 10))

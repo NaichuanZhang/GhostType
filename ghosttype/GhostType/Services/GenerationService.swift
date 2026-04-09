@@ -1,7 +1,6 @@
 import Foundation
 
 /// Handles AI text generation via the Python subprocess.
-/// Replaces the direct WebSocket callback wiring in PromptPanelView.
 class GenerationService {
     private let subprocess: SubprocessManager
     private var eventTask: Task<Void, Never>?
@@ -22,9 +21,14 @@ class GenerationService {
         browserContext: String? = nil,
         appState: AppState
     ) {
-        // Ensure subprocess is running
-        if !subprocess.isRunning {
+        guard subprocess.isRunning else {
+            NSLog("[GhostType][Gen] Subprocess not running, reporting error to user")
             subprocess.start()
+            DispatchQueue.main.async { [weak appState] in
+                appState?.errorMessage = "Backend not available. Retrying startup — please try again in a moment."
+                appState?.isGenerating = false
+            }
+            return
         }
 
         let request = SubprocessRequest(
@@ -84,7 +88,7 @@ class GenerationService {
                 case .toolDone(let name, let id, let input):
                     appState.handleToolDone(name: name, id: id, input: input)
 
-                case .conversationReset, .historyRestored, .agents:
+                case .conversationReset, .historyRestored, .agents, .browserContext:
                     break  // Not expected during generation
                 }
             } } catch {
@@ -130,6 +134,27 @@ class GenerationService {
                 }
             } catch {
                 NSLog("[GhostType][Gen] Agent fetch error: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    /// Fetches browser context from the backend.
+    func fetchBrowserContext(completion: @escaping (BrowserContextService.BrowserContextData?) -> Void) {
+        subprocess.send(SubprocessRequest(type: "get_browser_context"))
+
+        Task {
+            do {
+                for try await event in subprocess.events() {
+                    if case .browserContext(let data) = event {
+                        await MainActor.run {
+                            completion(data)
+                        }
+                        return
+                    }
+                }
+            } catch {
+                NSLog("[GhostType][Gen] Browser context fetch error: %@", error.localizedDescription)
+                await MainActor.run { completion(nil) }
             }
         }
     }

@@ -29,8 +29,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
-        appState.wsClient.stopHealthChecks()
-        appState.wsClient.disconnect()
+        appState.generationService.stop()
     }
 
     // MARK: - Main Menu (enables Cmd+C/V/X/A/Z in the floating panel)
@@ -102,8 +101,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Backend
 
     private func setupBackend() {
-        NSLog("[GhostType] Starting backend health checks...")
-        appState.wsClient.startHealthChecks(interval: 10)
+        NSLog("[GhostType] Starting subprocess backend...")
+        appState.subprocess.start()
+        appState.refreshAgents()
     }
 
     // MARK: - Accessibility

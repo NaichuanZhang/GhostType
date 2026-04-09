@@ -14,12 +14,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from stdio_server import (
-    build_message,
-    build_multimodal_message,
     emit,
     StdioCallbackHandler,
     CancellationError,
-    _friendly_error,
+)
+from message_builder import (
+    build_message,
+    build_multimodal_message,
+    friendly_error,
 )
 
 
@@ -92,29 +94,29 @@ class TestBuildMultimodalMessage:
 
 
 # ---------------------------------------------------------------------------
-# _friendly_error
+# friendly_error
 # ---------------------------------------------------------------------------
 
 
 class TestFriendlyError:
     def test_expired_token(self):
-        msg = _friendly_error(Exception("ExpiredTokenException: token expired"))
+        msg = friendly_error(Exception("ExpiredTokenException: token expired"))
         assert "expired" in msg.lower()
 
     def test_access_denied(self):
-        msg = _friendly_error(Exception("AccessDeniedException"))
+        msg = friendly_error(Exception("AccessDeniedException"))
         assert "Access denied" in msg
 
     def test_throttling(self):
-        msg = _friendly_error(Exception("ThrottlingException"))
+        msg = friendly_error(Exception("ThrottlingException"))
         assert "throttled" in msg.lower()
 
     def test_connection_error(self):
-        msg = _friendly_error(Exception("ConnectionError: cannot connect"))
+        msg = friendly_error(Exception("ConnectionError: cannot connect"))
         assert "connect" in msg.lower()
 
     def test_generic_error(self):
-        msg = _friendly_error(Exception("something unexpected"))
+        msg = friendly_error(Exception("something unexpected"))
         assert "Generation failed" in msg
 
 

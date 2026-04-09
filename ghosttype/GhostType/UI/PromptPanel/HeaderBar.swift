@@ -20,9 +20,9 @@ struct HeaderBar: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
 
-            // Backend status indicator
+            // Subprocess status indicator
             Circle()
-                .fill(appState.backendStatus == .running ? .green : .orange)
+                .fill(appState.subprocess.isRunning ? .green : .orange)
                 .frame(width: 6, height: 6)
 
             // Mode indicator (after first turn)

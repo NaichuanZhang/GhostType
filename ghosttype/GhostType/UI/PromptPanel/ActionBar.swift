@@ -7,6 +7,9 @@ struct ActionBar: View {
     let onCopy: () -> Void
     let onRetry: () -> Void
 
+    @State private var showCopyFeedback = false
+    @State private var showInsertFeedback = false
+
     private var hasContext: Bool {
         !appState.selectedContext.isEmpty
     }
@@ -15,34 +18,48 @@ struct ActionBar: View {
         HStack(spacing: 8) {
             // Insert/Replace — primary action in draft mode
             if appState.conversationMode == .draft {
-                Button(action: onInsert) {
+                Button(action: {
+                    showInsertFeedback = true
+                    onInsert()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        showInsertFeedback = false
+                    }
+                }) {
                     HStack(spacing: 4) {
-                        Image(systemName: hasContext ? "arrow.triangle.2.circlepath" : "text.insert")
+                        Image(systemName: showInsertFeedback ? "checkmark" : (hasContext ? "arrow.triangle.2.circlepath" : "text.insert"))
                             .font(.system(size: 11))
-                        Text(hasContext ? "Replace" : "Insert")
+                        Text(showInsertFeedback ? "Done" : (hasContext ? "Replace" : "Insert"))
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(.purple)
+                    .background(showInsertFeedback ? .green : .purple)
                     .foregroundColor(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .animation(.easeInOut(duration: 0.15), value: showInsertFeedback)
                 }
                 .buttonStyle(.plain)
             }
 
-            Button(action: onCopy) {
+            Button(action: {
+                showCopyFeedback = true
+                onCopy()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    showCopyFeedback = false
+                }
+            }) {
                 HStack(spacing: 4) {
-                    Image(systemName: "doc.on.doc")
+                    Image(systemName: showCopyFeedback ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 11))
-                    Text("Copy")
+                    Text(showCopyFeedback ? "Copied" : "Copy")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(appState.conversationMode == .chat ? AnyShapeStyle(.purple) : AnyShapeStyle(.quaternary.opacity(0.5)))
-                .foregroundColor(appState.conversationMode == .chat ? .white : .primary)
+                .background(showCopyFeedback ? AnyShapeStyle(.green) : (appState.conversationMode == .chat ? AnyShapeStyle(.purple) : AnyShapeStyle(.quaternary.opacity(0.5))))
+                .foregroundColor(showCopyFeedback || appState.conversationMode == .chat ? .white : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+                .animation(.easeInOut(duration: 0.15), value: showCopyFeedback)
             }
             .buttonStyle(.plain)
 

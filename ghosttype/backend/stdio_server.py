@@ -11,7 +11,6 @@ stderr: Python logging (forwarded to Console.app by Swift)
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import sys
@@ -19,10 +18,14 @@ import threading
 import time
 from typing import Any
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from agent import ModelConfig, create_agent
 from agent_registry import AgentRegistry
+from browser_context import BrowserContext, BrowserContextStore
 from config import config
 from mcp_manager import MCPManager
+from message_builder import build_message, build_multimodal_message, friendly_error
 
 # ---------------------------------------------------------------------------
 # Logging → stderr only (stdout is reserved for JSON events)
@@ -39,6 +42,87 @@ logger = logging.getLogger("ghosttype.stdio")
 # ---------------------------------------------------------------------------
 mcp_manager = MCPManager()
 agent_registry = AgentRegistry()
+
+# ---------------------------------------------------------------------------
+# Browser context store (shared between HTTP handler and stdio handler)
+# ---------------------------------------------------------------------------
+_browser_store = BrowserContextStore()
+
+
+# ---------------------------------------------------------------------------
+# Minimal HTTP server for Chrome extension (POST/GET /browser-context)
+# ---------------------------------------------------------------------------
+
+class BrowserContextHTTPHandler(BaseHTTPRequestHandler):
+    """Handles Chrome extension POST /browser-context and GET /browser-context.
+
+    Runs on a background thread so the main stdin loop stays unblocked.
+    """
+
+    def log_message(self, fmt, *args):
+        """Route HTTP logs through the stdio server logger."""
+        logger.debug("HTTP: " + fmt, *args)
+
+    def _send_json(self, status: int, data: dict):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._send_json(200, {"status": "ok"})
+        elif self.path == "/browser-context":
+            self._send_json(200, _browser_store.to_dict())
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/browser-context":
+            self._send_json(404, {"error": "not found"})
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "invalid JSON"})
+            return
+
+        url = data.get("url")
+        if not url:
+            self._send_json(400, {"error": "url is required"})
+            return
+
+        ctx = BrowserContext(
+            url=url,
+            title=data.get("title", ""),
+            content=data.get("content", ""),
+            selected_text=data.get("selected_text", ""),
+            timestamp=time.time(),
+        )
+        _browser_store.set(ctx)
+        logger.info("Browser context updated: %s", ctx.title or ctx.url)
+        self._send_json(200, {"status": "ok"})
+
+
+def _start_http_server(port: int = 8420):
+    """Start the browser context HTTP server on a background daemon thread."""
+    server = HTTPServer(("127.0.0.1", port), BrowserContextHTTPHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Browser context HTTP server started on port %d", port)
 
 # ---------------------------------------------------------------------------
 # Cancellation
@@ -141,66 +225,6 @@ class StdioCallbackHandler:
             )
 
 
-# ---------------------------------------------------------------------------
-# Message building (same as server.py)
-# ---------------------------------------------------------------------------
-
-def build_message(prompt: str, context: str, mode: str, browser_context: str = "") -> str:
-    """Build the user text message based on mode and context."""
-    if mode == "rewrite" and context:
-        base = f"Rewrite the following text:\n\n{context}\n\nInstructions: {prompt}"
-    elif mode == "fix" and context:
-        base = f"Fix grammar and spelling in the following text:\n\n{context}"
-    elif mode == "translate" and context:
-        base = f"Translate the following text. {prompt}\n\n{context}"
-    elif context:
-        base = (
-            f'Context (selected text from user\'s application):\n"""\n{context}\n"""\n\n'
-            f"Task: {prompt}"
-        )
-    else:
-        base = prompt
-
-    if browser_context:
-        base += f'\n\nBrowser page content:\n"""\n{browser_context}\n"""'
-
-    return base
-
-
-def build_multimodal_message(text: str, screenshot_b64: str | None) -> str | list:
-    """Build the agent message, optionally including a screenshot image."""
-    if not screenshot_b64:
-        return text
-
-    try:
-        image_bytes = base64.b64decode(screenshot_b64)
-    except Exception:
-        logger.warning("Failed to decode screenshot base64, sending text only")
-        return text
-
-    return [
-        {"image": {"format": "jpeg", "source": {"bytes": image_bytes}}},
-        {"text": text},
-    ]
-
-
-def _friendly_error(exc: Exception) -> str:
-    """Convert provider exceptions to user-readable messages."""
-    msg = str(exc)
-    if "ExpiredTokenException" in msg or "ExpiredToken" in msg:
-        return "AWS credentials expired. Run 'ada credentials update' or refresh your AWS session."
-    if "AccessDeniedException" in msg:
-        return "Access denied. Check your AWS profile and model permissions."
-    if "ThrottlingException" in msg:
-        return "Request throttled by the model provider. Try again in a few seconds."
-    if "ModelNotReadyException" in msg:
-        return "Model is not ready. Please try again shortly."
-    if "ValidationException" in msg and "model" in msg.lower():
-        return f"Invalid model configuration: {msg}"
-    if "ConnectTimeoutError" in msg or "ConnectionError" in msg:
-        return "Cannot connect to the model provider. Check your network and AWS region."
-    return f"Generation failed: {msg}"
-
 
 # ---------------------------------------------------------------------------
 # Output
@@ -230,6 +254,7 @@ GENERATION_TIMEOUT = 120  # seconds
 
 def main():
     mcp_manager.start()
+    _start_http_server(port=config.port)
     logger.info("GhostType stdio server started (PID %d)", __import__("os").getpid())
 
     agent = None
@@ -265,6 +290,15 @@ def main():
                 })
                 continue
 
+            # ---- Get browser context ----
+            if msg_type == "get_browser_context":
+                store_dict = _browser_store.to_dict()
+                emit({
+                    "type": "browser_context",
+                    "context": store_dict.get("context"),
+                })
+                continue
+
             # ---- New conversation ----
             if msg_type == "new_conversation":
                 agent = None
@@ -290,7 +324,7 @@ def main():
                 # Get MCP tools
                 mcp_tools = []
                 if agent_def and agent_def.mcp_servers:
-                    mcp_tools = mcp_manager.get_tools_for_agent(agent_def)
+                    mcp_tools = mcp_manager.get_mcp_tools_by_names(agent_def.mcp_servers)
 
                 # Create fresh agent with history
                 agent = create_agent(
@@ -353,7 +387,7 @@ def main():
                 if needs_new_agent:
                     mcp_tools = []
                     if agent_def.mcp_servers:
-                        mcp_tools = mcp_manager.get_tools_for_agent(agent_def)
+                        mcp_tools = mcp_manager.get_mcp_tools_by_names(agent_def.mcp_servers)
 
                     handler = StdioCallbackHandler(cancel_event)
                     agent = create_agent(
@@ -402,7 +436,7 @@ def main():
                         was_cancelled = True
                         logger.info("Generation cancelled")
                     except Exception as e:
-                        error_text = _friendly_error(e)
+                        error_text = friendly_error(e)
                         logger.error("Generation failed: %s", e, exc_info=True)
 
                 gen_thread = threading.Thread(target=run_agent, daemon=True)

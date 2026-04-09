@@ -1,4 +1,5 @@
 import Cocoa
+import Combine
 import SwiftUI
 
 /// Actions that a key event in the panel can resolve to.
@@ -15,21 +16,20 @@ class PanelManager {
     private var panel: FloatingPanel?
     private var hostingView: NSView?
     private let appState: AppState
-    private var dismissObserver: NSObjectProtocol?
     private var escapeMonitor: Any?
     private var previousApp: NSRunningApplication?
+    private var dismissCancellable: Any?
 
     init(appState: AppState) {
         self.appState = appState
 
-        dismissObserver = NotificationCenter.default.addObserver(
-            forName: .ghostTypeDismissPanel,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.hide()
-        }
-
+        // Observe dismiss action trigger from PromptPanelView
+        dismissCancellable = appState.$dismissAction
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.hide()
+            }
     }
 
     // MARK: - Key Event Routing
@@ -64,9 +64,6 @@ class PanelManager {
     }
 
     deinit {
-        if let observer = dismissObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
         if let monitor = escapeMonitor {
             NSEvent.removeMonitor(monitor)
         }
@@ -149,7 +146,6 @@ class PanelManager {
                 self.appState.clearConversation()
                 // Reset backend agent history for fresh conversation
                 self.appState.generationService.newConversation()
-                self.appState.wsClient.sendNewConversation()  // Legacy fallback
             }
 
             // Set context AFTER resume/clear decision (clearConversation resets selectedContext)
@@ -243,12 +239,12 @@ class PanelManager {
                 }
                 return nil
             case .handleEnter:
-                NSLog("[GhostType][KeyMonitor] Enter — response ready, posting ghostTypeEnterPressed")
-                NotificationCenter.default.post(name: .ghostTypeEnterPressed, object: nil)
+                NSLog("[GhostType][KeyMonitor] Enter — response ready, triggering enter action")
+                self?.appState.enterAction &+= 1
                 return nil
             case .submit:
-                NSLog("[GhostType][KeyMonitor] Cmd+Enter — posting ghostTypeSubmitPressed")
-                NotificationCenter.default.post(name: .ghostTypeSubmitPressed, object: nil)
+                NSLog("[GhostType][KeyMonitor] Cmd+Enter — triggering submit action")
+                self?.appState.submitAction &+= 1
                 return nil
             case .passThrough:
                 return event

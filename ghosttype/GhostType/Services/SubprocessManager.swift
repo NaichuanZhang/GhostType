@@ -11,6 +11,7 @@ enum SubprocessEvent {
     case conversationReset
     case historyRestored
     case agents([AgentInfo], defaultAgentId: String?)
+    case browserContext(BrowserContextService.BrowserContextData?)
 }
 
 /// Requests sent to the Python subprocess (serialized as JSON lines to stdin).
@@ -47,10 +48,10 @@ class SubprocessManager: ObservableObject {
     /// Continuation for the current event stream consumer.
     private var eventContinuation: AsyncThrowingStream<SubprocessEvent, Error>.Continuation?
 
-    /// Path to the Python executable inside the backend venv.
-    private let pythonPath: String
-    /// Path to stdio_server.py.
-    private let serverPath: String
+    /// Path to the uv binary.
+    private let uvPath: String
+    /// Path to the backend directory (contains pyproject.toml + stdio_server.py).
+    private let backendPath: String
 
     init(backendDir: String? = nil) {
         let base = backendDir ?? {
@@ -64,8 +65,17 @@ class SubprocessManager: ObservableObject {
                 ?? candidates.last!
         }()
 
-        self.pythonPath = base + "/.venv/bin/python3"
-        self.serverPath = base + "/stdio_server.py"
+        self.backendPath = base
+
+        // Find uv: check common locations
+        let uvCandidates = [
+            "/opt/homebrew/bin/uv",
+            "/usr/local/bin/uv",
+            NSString("~/.local/bin/uv").expandingTildeInPath,
+            NSString("~/.cargo/bin/uv").expandingTildeInPath,
+        ]
+        self.uvPath = uvCandidates.first { FileManager.default.fileExists(atPath: $0) }
+            ?? "uv"  // Fall back to PATH lookup
     }
 
     // MARK: - Lifecycle
@@ -74,9 +84,9 @@ class SubprocessManager: ObservableObject {
         guard process == nil else { return }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: pythonPath)
-        proc.arguments = ["-u", serverPath]  // -u for unbuffered stdout
-        proc.currentDirectoryURL = URL(fileURLWithPath: serverPath).deletingLastPathComponent()
+        proc.executableURL = URL(fileURLWithPath: uvPath)
+        proc.arguments = ["run", "python", "-u", "stdio_server.py"]
+        proc.currentDirectoryURL = URL(fileURLWithPath: backendPath)
 
         // Set up environment (inherit current + ensure PATH)
         var env = ProcessInfo.processInfo.environment
@@ -250,6 +260,18 @@ class SubprocessManager: ObservableObject {
             let defaultId = json["default_agent_id"] as? String
             let agents = agentDicts.compactMap { AgentInfo.fromDict($0) }
             return .agents(agents, defaultAgentId: defaultId)
+        case "browser_context":
+            if let ctx = json["context"] as? [String: Any] {
+                let data = BrowserContextService.BrowserContextData(
+                    url: ctx["url"] as? String ?? "",
+                    title: ctx["title"] as? String ?? "",
+                    content: ctx["content"] as? String ?? "",
+                    selectedText: ctx["selected_text"] as? String ?? "",
+                    timestamp: ctx["timestamp"] as? Double ?? 0
+                )
+                return .browserContext(data)
+            }
+            return .browserContext(nil)
         default:
             NSLog("[GhostType][Subprocess] Unknown event type: %@", type)
             return nil
