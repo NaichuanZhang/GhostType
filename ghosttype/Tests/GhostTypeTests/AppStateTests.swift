@@ -263,8 +263,8 @@ private func cleanup(_ url: URL) {
 @Test func effectiveAgentIdReturnsSelectedWhenSet() {
     let state = makeAppState()
     state.availableAgents = [
-        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"], isDefault: false, appMappings: []),
+        AgentInfo(id: "general", name: "General", description: "", tools: [], supportedModes: ["draft"], isDefault: true, appMappings: []),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [], supportedModes: ["chat"], isDefault: false, appMappings: []),
     ]
     state.defaultAgentId = "general"
     state.selectedAgentId = "coding"
@@ -275,8 +275,8 @@ private func cleanup(_ url: URL) {
 @Test func effectiveAgentIdAutoDetectsFromBundleId() {
     let state = makeAppState()
     state.availableAgents = [
-        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"], isDefault: false, appMappings: ["com.microsoft.VSCode"]),
+        AgentInfo(id: "general", name: "General", description: "", tools: [], supportedModes: ["draft"], isDefault: true, appMappings: []),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [], supportedModes: ["chat"], isDefault: false, appMappings: ["com.microsoft.VSCode"]),
     ]
     state.defaultAgentId = "general"
     state.selectedAgentId = nil
@@ -288,7 +288,7 @@ private func cleanup(_ url: URL) {
 @Test func effectiveAgentIdFallsBackToDefault() {
     let state = makeAppState()
     state.availableAgents = [
-        AgentInfo(id: "general", name: "General", description: "", supportedModes: ["draft"], isDefault: true, appMappings: []),
+        AgentInfo(id: "general", name: "General", description: "", tools: [], supportedModes: ["draft"], isDefault: true, appMappings: []),
     ]
     state.defaultAgentId = "general"
     state.selectedAgentId = nil

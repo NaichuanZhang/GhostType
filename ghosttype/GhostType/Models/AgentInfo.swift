@@ -5,12 +5,13 @@ struct AgentInfo: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let description: String
+    let tools: [String]
     let supportedModes: [String]
     let isDefault: Bool
     let appMappings: [String]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description
+        case id, name, description, tools
         case supportedModes = "supported_modes"
         case isDefault = "is_default"
         case appMappings = "app_mappings"
@@ -24,6 +25,7 @@ struct AgentInfo: Codable, Identifiable, Equatable {
             id: id,
             name: name,
             description: dict["description"] as? String ?? "",
+            tools: dict["tools"] as? [String] ?? [],
             supportedModes: dict["supported_modes"] as? [String] ?? ["draft", "chat"],
             isDefault: dict["is_default"] as? Bool ?? false,
             appMappings: dict["app_mappings"] as? [String] ?? []

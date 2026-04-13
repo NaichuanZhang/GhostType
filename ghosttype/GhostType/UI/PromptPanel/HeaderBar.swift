@@ -11,7 +11,16 @@ struct HeaderBar: View {
         !appState.conversationMessages.isEmpty
     }
 
+    private var effectiveAgentTools: [String] {
+        guard let agentId = appState.effectiveAgentId(),
+              let agent = appState.availableAgents.first(where: { $0.id == agentId }) else {
+            return []
+        }
+        return agent.tools
+    }
+
     var body: some View {
+        VStack(spacing: 0) {
         HStack {
             Image(systemName: "text.cursor")
                 .font(.system(size: 12, weight: .medium))
@@ -89,6 +98,39 @@ struct HeaderBar: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+
+            // Available tools row
+            if !effectiveAgentTools.isEmpty && !appState.isGenerating {
+                AvailableToolsRow(tools: effectiveAgentTools)
+            }
+        }
+    }
+}
+
+// MARK: - Available Tools
+
+struct AvailableToolsRow: View {
+    let tools: [String]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                ForEach(tools, id: \.self) { tool in
+                    Text(ToolCallInfo.displayName(for: tool))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary.opacity(0.3))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+        }
     }
 }
 

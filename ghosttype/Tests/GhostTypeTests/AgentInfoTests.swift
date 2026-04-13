@@ -10,6 +10,7 @@ import Foundation
         "id": "general",
         "name": "General Assistant",
         "description": "All-purpose assistant",
+        "tools": ["rewrite_text", "fix_grammar"],
         "supported_modes": ["draft", "chat"],
         "is_default": true,
         "app_mappings": []
@@ -20,6 +21,7 @@ import Foundation
 
     #expect(agent.id == "general")
     #expect(agent.name == "General Assistant")
+    #expect(agent.tools == ["rewrite_text", "fix_grammar"])
     #expect(agent.supportedModes == ["draft", "chat"])
     #expect(agent.isDefault == true)
     #expect(agent.appMappings.isEmpty)
@@ -31,6 +33,7 @@ import Foundation
         "id": "coding",
         "name": "Code Assistant",
         "description": "Helps with code",
+        "tools": ["count_words"],
         "supported_modes": ["chat"],
         "is_default": false,
         "app_mappings": ["com.microsoft.VSCode", "com.apple.dt.Xcode"]
@@ -40,6 +43,7 @@ import Foundation
     let agent = try JSONDecoder().decode(AgentInfo.self, from: json)
 
     #expect(agent.id == "coding")
+    #expect(agent.tools == ["count_words"])
     #expect(agent.isDefault == false)
     #expect(agent.appMappings.count == 2)
     #expect(agent.appMappings.contains("com.microsoft.VSCode"))
@@ -49,10 +53,12 @@ import Foundation
 
 @Test func agentForBundleExactMatch() {
     let agents = [
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"],
-                  isDefault: false, appMappings: ["com.microsoft.VSCode"]),
-        AgentInfo(id: "email", name: "Email", description: "", supportedModes: ["draft"],
-                  isDefault: false, appMappings: ["com.apple.mail"]),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [],
+                  supportedModes: ["chat"], isDefault: false,
+                  appMappings: ["com.microsoft.VSCode"]),
+        AgentInfo(id: "email", name: "Email", description: "", tools: [],
+                  supportedModes: ["draft"], isDefault: false,
+                  appMappings: ["com.apple.mail"]),
     ]
 
     let result = AgentInfo.agentForBundle("com.microsoft.VSCode", from: agents)
@@ -61,8 +67,9 @@ import Foundation
 
 @Test func agentForBundlePrefixMatch() {
     let agents = [
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"],
-                  isDefault: false, appMappings: ["com.jetbrains"]),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [],
+                  supportedModes: ["chat"], isDefault: false,
+                  appMappings: ["com.jetbrains"]),
     ]
 
     let result = AgentInfo.agentForBundle("com.jetbrains.intellij", from: agents)
@@ -71,8 +78,9 @@ import Foundation
 
 @Test func agentForBundleNoMatchReturnsNil() {
     let agents = [
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"],
-                  isDefault: false, appMappings: ["com.microsoft.VSCode"]),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [],
+                  supportedModes: ["chat"], isDefault: false,
+                  appMappings: ["com.microsoft.VSCode"]),
     ]
 
     let result = AgentInfo.agentForBundle("com.unknown.App", from: agents)
@@ -81,8 +89,9 @@ import Foundation
 
 @Test func agentForBundleNilBundleReturnsNil() {
     let agents = [
-        AgentInfo(id: "coding", name: "Code", description: "", supportedModes: ["chat"],
-                  isDefault: false, appMappings: ["com.microsoft.VSCode"]),
+        AgentInfo(id: "coding", name: "Code", description: "", tools: [],
+                  supportedModes: ["chat"], isDefault: false,
+                  appMappings: ["com.microsoft.VSCode"]),
     ]
 
     let result = AgentInfo.agentForBundle(nil, from: agents)
@@ -94,9 +103,9 @@ import Foundation
 @Test func effectiveAgentNameShowsResolvedNameNotAuto() {
     let agents = [
         AgentInfo(id: "general", name: "General Assistant", description: "",
-                  supportedModes: ["draft"], isDefault: true, appMappings: []),
+                  tools: [], supportedModes: ["draft"], isDefault: true, appMappings: []),
         AgentInfo(id: "coding", name: "Code Assistant", description: "",
-                  supportedModes: ["chat"], isDefault: false,
+                  tools: [], supportedModes: ["chat"], isDefault: false,
                   appMappings: ["com.microsoft.VSCode"]),
     ]
 

@@ -91,6 +91,7 @@ import Foundation
         "id": "coding",
         "name": "Coding Agent",
         "description": "For code",
+        "tools": ["count_words", "rewrite_text"],
         "supported_modes": ["draft", "chat"],
         "is_default": false,
         "app_mappings": ["com.microsoft.VSCode"],
@@ -102,6 +103,7 @@ import Foundation
     #expect(agent?.id == "coding")
     #expect(agent?.name == "Coding Agent")
     #expect(agent?.description == "For code")
+    #expect(agent?.tools == ["count_words", "rewrite_text"])
     #expect(agent?.supportedModes == ["draft", "chat"])
     #expect(agent?.isDefault == false)
     #expect(agent?.appMappings == ["com.microsoft.VSCode"])
@@ -124,6 +126,7 @@ import Foundation
 
     #expect(agent != nil)
     #expect(agent?.description == "")
+    #expect(agent?.tools == [])
     #expect(agent?.supportedModes == ["draft", "chat"])
     #expect(agent?.isDefault == false)
     #expect(agent?.appMappings == [])
