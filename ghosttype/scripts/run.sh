@@ -50,4 +50,4 @@ echo "  - Press Ctrl+K anywhere to open the prompt panel"
 echo "  - Escape or Ctrl+K again to dismiss"
 echo ""
 
-open "$APP_DIR"
+exec "$MACOS_DIR/GhostType"

@@ -7,16 +7,12 @@ struct SettingsView: View {
         Form {
             Section("Status") {
                 LabeledContent("Backend") {
-                    switch appState.backendStatus {
-                    case .running:
+                    if appState.subprocess.isRunning {
                         Label("Running", systemImage: "circle.fill")
                             .foregroundColor(.green)
-                    case .stopped:
+                    } else {
                         Label("Stopped", systemImage: "circle.fill")
                             .foregroundColor(.red)
-                    case .error(let msg):
-                        Label(msg, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
                     }
                 }
 
